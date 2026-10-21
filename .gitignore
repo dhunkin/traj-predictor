@@ -1,0 +1,6 @@
+/target
+/web/pkg
+*.swp
+.DS_Store
+.idea/
+.vscode/
