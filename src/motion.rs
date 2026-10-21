@@ -29,20 +29,21 @@ pub fn propagate(
     rng: &mut Xoshiro256ss,
     ttc: &Ttc,
 ) -> ([f64; 2], f64, f64, f64) {
+    let omega = omega.clamp(-ttc.omega_max, ttc.omega_max);
+    let v_new = (v + rng.gauss(0.0, speed_noise))
+        .clamp(ttc.v_min, ttc.v_max);
     let psi_new = psi + omega * t;
     let pos_new = if omega.abs() < 1e-9 {
-        // Constant-velocity (straight-line) motion.
-        let dx = v * t * psi.cos();
-        let dy = v * t * psi.sin();
-        [pos[0] + dx, pos[1] + dy]
+        [
+            pos[0] + v_new * t * psi.cos(),
+            pos[1] + v_new * t * psi.sin(),
+        ]
     } else {
-        // Analytic arc for a constant turn rate.
-        let ratio = v / omega;
-        let dx = ratio * (psi_new.sin() - psi.sin());
-        let dy = ratio * (-psi_new.cos() + psi.cos());
-        [pos[0] + dx, pos[1] + dy]
+        let ratio = v_new / omega;
+        [
+            pos[0] + ratio * (psi_new.sin() - psi.sin()),
+            pos[1] + ratio * (-psi_new.cos() + psi.cos()),
+        ]
     };
-    let v_new = (v + rng.gauss(0.0, speed_noise)).clamp(ttc.v_min, ttc.v_max);
-    let omega_new = omega.clamp(-ttc.omega_max, ttc.omega_max);
-    (pos_new, psi_new, v_new, omega_new)
+    (pos_new, psi_new, v_new, omega)
 }

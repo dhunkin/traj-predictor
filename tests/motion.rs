@@ -90,13 +90,14 @@ fn speed_is_clamped() {
         omega_max: 1.0,
     };
     let mut rng = Xoshiro256ss::from_seed(3);
-    // v=100, huge noise, omega=0 -> straight line. Position uses the input
-    // v (100) per §4.3's arc formula; the returned v_new is clamped to v_max.
+    // v=100, huge noise, omega=0 -> straight line. Per BUG 1 fix, position
+    // uses the clamped v_new (sampled velocity), not the input v.
     let (pos, _psi, v, _omega) = propagate(
         [0.0, 0.0], 100.0, 0.0, 0.0, 1.0, 1000.0, &mut rng, &ttc,
     );
     assert!((v - 8.0).abs() < 1e-9, "v clamped high: {}", v);
-    assert!((pos[0] - 100.0).abs() < 1e-6, "x: {}", pos[0]);
+    // omega=0, t=1, psi=0 => pos[0] = v_new * t * cos(psi) = v_new.
+    assert!((pos[0] - v).abs() < 1e-6, "x: {}", pos[0]);
 
     // v = -100 -> v_new clamped to v_min.
     let (_pos2, _psi2, v2, _omega2) = propagate(
