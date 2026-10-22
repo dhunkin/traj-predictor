@@ -252,13 +252,25 @@ fn low_vs_high_turn_rate() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 5. coverage_90  (#[ignore] by default; run with --ignored)
-// ---------------------------------------------------------------------------
+    // Sector-mass consistency check: sampling a bin from the
+    // predicted distribution and testing membership in the
+    // extracted sector must succeed with probability equal to
+    // that sector's accumulated mass. Because the sector is
+    // chosen to cover >= threshold of the distribution, this
+    // succeeds in [0.85, 0.95] for 90% and [0.45, 0.55] for
+    // 50% by construction. This does NOT test calibration of
+    // predict(); true coverage against independent ground
+    // truth requires heading uncertainty that Stage 1 does
+    // not produce.
+    //
+    // TODO(Stage2): replace with a calibration test that
+    // simulates a noisy truth track, predicts from its last
+    // observation, and checks whether the truth heading falls
+    // inside the extracted sector.
 
 #[test]
 #[ignore]
-fn coverage_90() {
+fn sector_mass_consistency_90() {
     // 1000 simulated tracks (different seeds). Fraction where a fresh heading
     // drawn from the predicted distribution falls inside the 90% sector must
     // be in [0.85, 0.95].
@@ -294,13 +306,25 @@ fn coverage_90() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 6. coverage_50  (#[ignore] by default; run with --ignored)
-// ---------------------------------------------------------------------------
+    // Sector-mass consistency check: sampling a bin from the
+    // predicted distribution and testing membership in the
+    // extracted sector must succeed with probability equal to
+    // that sector's accumulated mass. Because the sector is
+    // chosen to cover >= threshold of the distribution, this
+    // succeeds in [0.85, 0.95] for 90% and [0.45, 0.55] for
+    // 50% by construction. This does NOT test calibration of
+    // predict(); true coverage against independent ground
+    // truth requires heading uncertainty that Stage 1 does
+    // not produce.
+    //
+    // TODO(Stage2): replace with a calibration test that
+    // simulates a noisy truth track, predicts from its last
+    // observation, and checks whether the truth heading falls
+    // inside the extracted sector.
 
 #[test]
 #[ignore]
-fn coverage_50() {
+fn sector_mass_consistency_50() {
     // Same as coverage_90 for the 50% sector; expectation [0.45, 0.55].
     let obs = straight_last_obs(20.0, 0.0, [1.0, 0.0, 1.0]);
     let t = ttc(2.0, 8.0, 0.5);
@@ -396,9 +420,19 @@ fn simulator_then_predict() {
     assert_eq!(track.len(), 1, "one waypoint -> one observation");
 
     let last = &track[0];
-    // First observation carries v = 0, psi = 0 (start of track).
-    assert_eq!(last.v, 5.0, "simulator sets v from start");
-    assert_eq!(last.psi, 0.0, "simulator sets psi from start");
+    // First observation carries v = start.v, psi = start.psi
+    // (simulator copies the initial KinState into every
+    // observation for Stage 1).
+    assert!(
+        (last.v - 5.0).abs() < 1e-9,
+        "simulator sets v from start: got {}",
+        last.v
+    );
+    assert!(
+        (last.psi - 0.0).abs() < 1e-9,
+        "simulator sets psi from start: got {}",
+        last.psi
+    );
 
     let c = cfg(10.0, 10000, 0.3, 72, 42, 0.5);
     let prediction = predict(last, &t, &[], &c);
