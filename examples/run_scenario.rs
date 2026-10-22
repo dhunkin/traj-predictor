@@ -176,15 +176,24 @@ fn main() {
 
     // Stage 1: predict from the last observation.
     let last = &observations[observations.len() - 1];
+
+    let t_start = std::time::Instant::now();
     let prediction = predict(last, &ttc, &oois, &config);
+    let elapsed_ms = t_start.elapsed().as_millis();
 
     let sector50_deg = prediction.sector50 * 180.0 / PI;
     let sector90_deg = prediction.sector90 * 180.0 / PI;
-    let heading_mean_deg = psi_rem_euclid(prediction.final_heading_mean) * 180.0 / PI;
+    let heading_mean_deg =
+        psi_rem_euclid(prediction.final_heading_mean) * 180.0 / PI;
+    let n_bins_nonzero = prediction
+        .bin_probs
+        .iter()
+        .filter(|&&p| p > 0.0)
+        .count();
 
-    println!("sector50_deg {}", sector50_deg);
-    println!("sector90_deg {}", sector90_deg);
-    println!("point_cloud_count {}", prediction.point_cloud.len());
-    println!("bin_count {}", prediction.bin_centers.len());
-    println!("heading_mean_deg {}", heading_mean_deg);
+    println!("sector50_deg = {}", sector50_deg);
+    println!("sector90_deg = {}", sector90_deg);
+    println!("heading_mean_deg = {}", heading_mean_deg);
+    println!("n_bins_nonzero = {}", n_bins_nonzero);
+    println!("elapsed_ms = {}", elapsed_ms);
 }
