@@ -1,30 +1,20 @@
 //! simulator.rs — synthetic track generator.
-//!
-//! Generates a straight-line truth track from `truth_waypoints` and returns a
-//! vector of `Observation`s sampled at `dt_obs_s`. Truth motion is
-//! constant-velocity (omega = 0 for all legs); the per-observation `cov` field
-//! carries `obs_cov` (the observation-noise covariance applied by the
-//! predictor). Truth integration uses `motion::propagate` so the track and the
-//! Monte-Carlo predictor share one motion model.
-//!
-//! TODO(Stage2): curved truth paths.
 
-use crate::motion::propagate;
 use crate::prng::Xoshiro256ss;
 use crate::types::{KinState, Observation, Ttc};
+use crate::vec2::Mat2;
 
-/// Generate a straight-line truth track.
+/// Generate a synthetic track for Stage 1: constant-velocity
+/// straight-line truth starting at truth_waypoints[0], observed
+/// with Gaussian noise of covariance obs_cov.
 ///
-/// # Arguments
-/// * `truth_waypoints` — constant-velocity legs; leg `i` runs from waypoint `i`
-///   to waypoint `i+1` for `t_obs` seconds.
-/// * `ttc` — speed/turn-rate limits (passed to `propagate`).
-/// * `dt_obs_s` — observation interval; also the per-leg duration.
-/// * `obs_cov` — `[xx, xy, yy]` observation-noise covariance, copied into each
-///   returned observation's `cov` field.
-/// * `seed` — RNG seed for the truth integration.
+/// Only truth_waypoints[0] is used (pos, v, psi). The number of
+/// observations is truth_waypoints.len(); consecutive legs in the
+/// input are ignored in Stage 1. Per-observation noise is drawn
+/// from Mat2::from_cov(obs_cov).sample(&mut rng).
 ///
-/// Returns `n_obs + 1` observations where `n_obs = (waypoints.len() - 1)`.
+/// TODO(Stage2): honour per-leg waypoints (piecewise straight or
+/// curved) and consume turn-rate limits from ttc.
 pub fn generate_track(
     truth_waypoints: &[KinState],
     ttc: &Ttc,
@@ -38,50 +28,26 @@ pub fn generate_track(
     );
     assert!(dt_obs_s > 0.0, "dt_obs_s must be positive");
 
-    let start = truth_waypoints[0].clone();
-    let t_obs = dt_obs_s;
-    let total_s = (truth_waypoints.len() - 1) as f64 * t_obs;
-    let n_obs = (total_s / t_obs) as u32;
+    let _ = ttc; // unused in Stage 1; kept for Stage 2 curves
 
+    let start = &truth_waypoints[0];
+    let n_legs = truth_waypoints.len() - 1;
     let mut rng = Xoshiro256ss::from_seed(seed);
+    let mat = Mat2::from_cov(obs_cov);
 
-    let mut observations = Vec::with_capacity(n_obs as usize + 1);
-    let mut prev = start.clone();
-
-    for i in 0..=n_obs {
-        let t_obs_i = i as f64 * t_obs;
-        let pos = if i == 0 {
-            start.pos
-        } else {
-            // Straight-line leg: omega = 0, speed_noise = 0. `propagate` still
-            // consumes one RNG draw per leg (gauss(0, 0)), so the RNG path is
-            // exercised and the track stays deterministic for a given seed.
-            let (pos_new, _psi, _v, _o) = propagate(
-                prev.pos,
-                prev.v,
-                prev.psi,
-                0.0,
-                t_obs,
-                0.0,
-                &mut rng,
-                ttc,
-            );
-            pos_new
-        };
-
+    let mut observations = Vec::with_capacity(n_legs + 1);
+    for i in 0..=n_legs {
+        let t = i as f64 * dt_obs_s;
+        let truth_pos = [
+            start.pos[0] + start.v * t * start.psi.cos(),
+            start.pos[1] + start.v * t * start.psi.sin(),
+        ];
+        let noise = mat.sample(&mut rng);
         observations.push(Observation {
-            t: t_obs_i,
-            pos,
+            t,
+            pos: [truth_pos[0] + noise.x, truth_pos[1] + noise.y],
             cov: obs_cov,
         });
-
-        // Advance to the current state for the next leg (constant v, psi).
-        prev = KinState {
-            pos,
-            v: prev.v,
-            psi: prev.psi,
-        };
     }
-
     observations
 }
