@@ -1,13 +1,14 @@
 //! run_scenario — CLI entry point for Stage 1.
 //!
 //! Reads a scenario file (see `scenarios/simple.txt`), runs the
-//! Monte-Carlo predictor, and prints the five numbers per §5:
+//! Monte-Carlo predictor, and prints five lines in 'key = value'
+//! format per §5, in this order:
 //!
-//!   sector50_deg
-//!   sector90_deg
-//!   point_cloud_count
-//!   bin_count
-//!   heading_mean_deg
+//!   sector50_deg      width of the 50% sector, degrees
+//!   sector90_deg      width of the 90% sector, degrees
+//!   heading_mean_deg  circular mean final heading, [0, 360)
+//!   n_bins_nonzero    number of azimuth bins with p > 0
+//!   elapsed_ms        time spent inside predict(), milliseconds
 //!
 //! Manual parsing with std::env::args + split_whitespace. No new deps.
 

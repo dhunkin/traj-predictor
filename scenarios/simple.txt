@@ -1,5 +1,9 @@
 # simple.txt — Stage 1 reference scenario.
-# Straight flight toward a single OOI, moderate sensor noise.
+# Straight flight along +X at 5 m/s. Observation positions are
+# exact (no per-observation jitter); the cov field is what
+# predict() uses to sample the starting-position uncertainty.
+# The single OOI is an extension point for Stage 2 and is not
+# used by the Stage 1 predictor.
 #
 # Format (one directive per line, '#' starts a comment,
 # fields separated by whitespace):
