@@ -3,6 +3,7 @@
 
 // ---- Placeholder items for Step 1 (filled in later steps) ----
 
+#[derive(Clone)]
 pub struct KinState {
     pub pos: [f64; 2],
     pub v: f64,
