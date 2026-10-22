@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Predictor — UAV Heading Prediction (Stage 1 WASM demo)</title>
+
+  <!-- MapLibre GL JS 3.x via CDN (OSM raster tiles). -->
+  <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    #map { position: absolute; top: 0; bottom: 0; left: 0; right: 0; }
+
+    /* Canvas overlay: sits on top of the map, receives no pointer events so the
+       map stays pan/zoomable. Resized to the map canvas size. */
+    #fan {
+      position: absolute;
+      top: 0;
+      left: 0;
+      pointer-events: none;
+    }
+
+    #panel {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 280px;
+      background: rgba(255, 255, 255, 0.94);
+      border: 1px solid #bbb;
+      border-radius: 8px;
+      padding: 12px 14px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+      z-index: 5;
+      font-size: 13px;
+    }
+    #panel h2 { margin: 0 0 8px; font-size: 15px; }
+    #panel .row { display: flex; align-items: center; justify-content: space-between;
+                  margin: 5px 0; gap: 8px; }
+    #panel label { flex: 1 1 auto; }
+    #panel input[type="number"] { width: 74px; padding: 3px 4px; }
+    #panel .checks { margin: 8px 0; }
+    #panel .checks label { display: block; margin: 3px 0; }
+    #panel .btns { display: flex; gap: 8px; margin-top: 8px; }
+    #panel button { flex: 1; padding: 6px 8px; cursor: pointer; }
+    #stats { margin-top: 10px; padding-top: 8px; border-top: 1px solid #ddd;
+             font-variant-numeric: tabular-nums; }
+    #stats div { display: flex; justify-content: space-between; margin: 2px 0; }
+    #stats .title { font-weight: 600; margin-bottom: 3px; }
+    #status { margin-top: 6px; font-size: 12px; color: #555; min-height: 16px; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <canvas id="fan"></canvas>
+
+  <div id="panel">
+    <h2>Predictor controls</h2>
+
+    <div class="row"><label for="seed">seed</label><input id="seed" type="number" value="42" step="1" /></div>
+    <div class="row"><label for="v_min">v_min</label><input id="v_min" type="number" value="3" step="0.5" /></div>
+    <div class="row"><label for="v_max">v_max</label><input id="v_max" type="number" value="12" step="0.5" /></div>
+    <div class="row"><label for="omega_max">omega_max</label><input id="omega_max" type="number" value="0.5" step="0.05" /></div>
+    <div class="row"><label for="horizon_s">horizon_s</label><input id="horizon_s" type="number" value="10" step="0.5" /></div>
+    <div class="row"><label for="n_samples">n_samples</label><input id="n_samples" type="number" value="2000" step="500" /></div>
+    <div class="row"><label for="p_turn">p_turn</label><input id="p_turn" type="number" value="0.3" step="0.05" min="0" max="1" /></div>
+    <div class="row"><label for="speed_noise_mps">speed_noise_mps</label><input id="speed_noise_mps" type="number" value="0.5" step="0.1" /></div>
+    <div class="row"><label for="azimuth_bins">azimuth_bins</label><input id="azimuth_bins" type="number" value="72" step="1" /></div>
+
+    <div class="checks">
+      <label><input id="show_track" type="checkbox" checked /> show track</label>
+      <label><input id="show_cloud" type="checkbox" checked /> show point cloud</label>
+    </div>
+
+    <div class="btns">
+      <button id="btn_sim">Simulate track</button>
+      <button id="btn_predict">Predict</button>
+    </div>
+
+    <div id="status">Ready.</div>
+
+    <div id="stats">
+      <div class="title">Stats</div>
+      <div><span>sector50 (°)</span><span id="s50">—</span></div>
+      <div><span>sector90 (°)</span><span id="s90">—</span></div>
+      <div><span>mean heading (°)</span><span id="smean">—</span></div>
+      <div><span>elapsed ms</span><span id="selapsed">—</span></div>
+    </div>
+  </div>
+
+  <script type="module" src="demo.js"></script>
+</body>
+</html>
