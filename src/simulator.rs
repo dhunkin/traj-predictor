@@ -46,6 +46,8 @@ pub fn generate_track(
         observations.push(Observation {
             t,
             pos: [truth_pos[0] + noise.x, truth_pos[1] + noise.y],
+            v: start.v,
+            psi: start.psi,
             cov: obs_cov,
         });
     }

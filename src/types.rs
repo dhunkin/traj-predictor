@@ -11,9 +11,11 @@ pub struct KinState {
 }
 
 pub struct Observation {
-    pub t: f64,
+    pub t: f64,           // seconds from scenario start
     pub pos: [f64; 2],
-    pub cov: [f64; 3],
+    pub v: f64,           // m/s, last speed (Stage 1 MC uses as-is)
+    pub psi: f64,         // rad, last heading (Stage 1 MC uses as-is)
+    pub cov: [f64; 3],    // [xx, xy, yy]
 }
 
 pub struct Ttc {
