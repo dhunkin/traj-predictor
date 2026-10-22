@@ -252,28 +252,30 @@ fn low_vs_high_turn_rate() {
     );
 }
 
-    // Sector-mass consistency check: sampling a bin from the
-    // predicted distribution and testing membership in the
-    // extracted sector must succeed with probability equal to
-    // that sector's accumulated mass. Because the sector is
-    // chosen to cover >= threshold of the distribution, this
-    // succeeds in [0.85, 0.95] for 90% and [0.45, 0.55] for
-    // 50% by construction. This does NOT test calibration of
-    // predict(); true coverage against independent ground
-    // truth requires heading uncertainty that Stage 1 does
-    // not produce.
-    //
-    // TODO(Stage2): replace with a calibration test that
-    // simulates a noisy truth track, predicts from its last
-    // observation, and checks whether the truth heading falls
-    // inside the extracted sector.
+// Sector-mass consistency check: sampling a bin from the
+// predicted distribution and testing membership in the
+// extracted sector must succeed with probability equal to
+// that sector's accumulated mass. Because the sector is
+// chosen to cover >= threshold of the distribution, this
+// succeeds in [0.85, 0.95] for 90% and [0.45, 0.55] for
+// 50% by construction. This does NOT test calibration of
+// predict(); true coverage against independent ground
+// truth requires heading uncertainty that Stage 1 does
+// not produce.
+//
+// TODO(Stage2): replace with a calibration test that
+// simulates a noisy truth track, predicts from its last
+// observation, and checks whether the truth heading falls
+// inside the extracted sector.
 
 #[test]
 #[ignore]
 fn sector_mass_consistency_90() {
-    // 1000 simulated tracks (different seeds). Fraction where a fresh heading
-    // drawn from the predicted distribution falls inside the 90% sector must
-    // be in [0.85, 0.95].
+    // 1000 different seeds. For each seed: extract the 90% sector,
+    // sample a heading from the same distribution, count membership.
+    // Expected fraction is ~0.90 by construction (sector covers 90%
+    // of the distribution). This is a consistency check, not a
+    // calibration test; see the docstring above for why.
     let obs = straight_last_obs(20.0, 0.0, [1.0, 0.0, 1.0]);
     let t = ttc(2.0, 8.0, 0.5);
     let n_tracks = 1000u64;
@@ -301,31 +303,32 @@ fn sector_mass_consistency_90() {
     let frac = inside as f64 / n_tracks as f64;
     assert!(
         frac >= 0.85 && frac <= 0.95,
-        "coverage_90 = {}, expected in [0.85, 0.95]",
+        "sector_mass_consistency_90 = {}, expected in [0.85, 0.95]",
         frac
     );
 }
 
-    // Sector-mass consistency check: sampling a bin from the
-    // predicted distribution and testing membership in the
-    // extracted sector must succeed with probability equal to
-    // that sector's accumulated mass. Because the sector is
-    // chosen to cover >= threshold of the distribution, this
-    // succeeds in [0.85, 0.95] for 90% and [0.45, 0.55] for
-    // 50% by construction. This does NOT test calibration of
-    // predict(); true coverage against independent ground
-    // truth requires heading uncertainty that Stage 1 does
-    // not produce.
-    //
-    // TODO(Stage2): replace with a calibration test that
-    // simulates a noisy truth track, predicts from its last
-    // observation, and checks whether the truth heading falls
-    // inside the extracted sector.
+// Sector-mass consistency check: sampling a bin from the
+// predicted distribution and testing membership in the
+// extracted sector must succeed with probability equal to
+// that sector's accumulated mass. Because the sector is
+// chosen to cover >= threshold of the distribution, this
+// succeeds in [0.85, 0.95] for 90% and [0.45, 0.55] for
+// 50% by construction. This does NOT test calibration of
+// predict(); true coverage against independent ground
+// truth requires heading uncertainty that Stage 1 does
+// not produce.
+//
+// TODO(Stage2): replace with a calibration test that
+// simulates a noisy truth track, predicts from its last
+// observation, and checks whether the truth heading falls
+// inside the extracted sector.
 
 #[test]
 #[ignore]
 fn sector_mass_consistency_50() {
-    // Same as coverage_90 for the 50% sector; expectation [0.45, 0.55].
+    // Same as sector_mass_consistency_90 for the 50% sector.
+    // Expected fraction ~0.50 by construction.
     let obs = straight_last_obs(20.0, 0.0, [1.0, 0.0, 1.0]);
     let t = ttc(2.0, 8.0, 0.5);
     let n_tracks = 1000u64;
@@ -353,7 +356,7 @@ fn sector_mass_consistency_50() {
     let frac = inside as f64 / n_tracks as f64;
     assert!(
         frac >= 0.45 && frac <= 0.55,
-        "coverage_50 = {}, expected in [0.45, 0.55]",
+        "sector_mass_consistency_50 = {}, expected in [0.45, 0.55]",
         frac
     );
 }
