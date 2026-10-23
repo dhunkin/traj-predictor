@@ -75,6 +75,9 @@ function status(msg) { el('status').textContent = msg; }
 let observations = []; // {t, x, y, cov_xx, cov_xy, cov_yy, v, psi}
 let sim = null;
 let pred = null;
+// Last observation, hoisted to module scope so predict() can use it
+// regardless of handler scope (fixes "last is not defined" on Predict).
+let lastObservation = null;
 
 const W = async (fn) => {
   try { return await fn(); }
@@ -104,8 +107,8 @@ function draw() {
     }
   }
 
-  if (!observations.length) return;
-  const last = observations[observations.length - 1];
+  if (!lastObservation) return;
+  const last = lastObservation;
 
   // Point cloud.
   if (showCloud && pred) {
@@ -167,11 +170,11 @@ function draw() {
 
   // Sector contours: 50% and 90% as solid bright radial lines.
   const mean = pred.final_heading_mean;
-  drawSectorContour(ax, ay, mean, pred.sector50, '#00ff00');
-  drawSectorContour(ax, ay, mean, pred.sector90, '#ff00ff');
+  drawSectorContour(ax, ay, mean, pred.sector50, '#00ff00', last);
+  drawSectorContour(ax, ay, mean, pred.sector90, '#ff00ff', last);
 }
 
-function drawSectorContour(ax, ay, mean, width, color) {
+function drawSectorContour(ax, ay, mean, width, color, last) {
   const vMean = (val('v_min') + val('v_max')) / 2;
   const horizon = val('horizon_s');
   const length = horizon * vMean;
@@ -217,17 +220,30 @@ async function simulate() {
         v: speed, psi: headingRad,
       });
     }
+    lastObservation = observations[observations.length - 1];
     pred = null;
     draw();
     status('track simulated: ' + observations.length + ' observations');
+
+    // Center the scenario start in the left half of the viewport so the
+    // prediction fan opens into empty space on the right (BUG 2).
+    if (map.isLoaded()) {
+      const [lng, lat] = metersToLngLat(lastObservation.x, lastObservation.y);
+      map.easeTo({ center: [lng, lat], zoom: 16, duration: 800 });
+    }
   });
 }
 
 async function predict() {
   await W(async () => {
-    if (!observations.length) { status('simulate first'); return; }
-    const last = observations[observations.length - 1];
+    if (!lastObservation) {
+      console.warn('Predict pressed before Simulate; ignoring');
+      status('simulate first');
+      return;
+    }
+    const last = lastObservation;
     const azimuthBins = Math.round(val('azimuth_bins'));
+    const t0 = performance.now();
 
     pred = new Predictor(val('v_min'), val('v_max'), val('omega_max'));
     const res = pred.predict(
@@ -252,6 +268,7 @@ async function predict() {
     el('s50').textContent = (pred.sector50 * 180 / Math.PI).toFixed(1);
     el('s90').textContent = (pred.sector90 * 180 / Math.PI).toFixed(1);
     el('smean').textContent = (pred.final_heading_mean * 180 / Math.PI).toFixed(1);
+    el('selapsed').textContent = Math.round(performance.now() - t0);
 
     draw();
     status('prediction complete');
@@ -265,7 +282,10 @@ function copy(arr) {
 }
 
 // ---- Wire up ---------------------------------------------------------------
-map.on('load', () => {
+let buttonsWired = false;
+function wireButtons() {
+  if (buttonsWired) return;
+  buttonsWired = true;
   resizeCanvas();
   map.on('move', () => { resizeCanvas(); draw(); });
   map.on('zoom', () => { resizeCanvas(); draw(); });
@@ -274,7 +294,11 @@ map.on('load', () => {
   el('btn_sim').addEventListener('click', simulate);
   el('btn_predict').addEventListener('click', predict);
   status('Ready.');
-});
+}
+map.on('load', wireButtons);
+// Fallback: if the 'load' event doesn't fire (e.g., tiles not loading in a
+// headless browser), wire up the buttons after init() completes.
+setTimeout(wireButtons, 2000);
 
 // Ensure the WASM module is instantiated before use.
 await init();
