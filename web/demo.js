@@ -247,7 +247,6 @@ async function predict() {
       sector90: res.sector90(),
     };
     res.free();
-    pred.free();
 
     // Stats (radians -> degrees).
     el('s50').textContent = (pred.sector50 * 180 / Math.PI).toFixed(1);
