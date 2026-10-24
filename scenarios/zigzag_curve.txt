@@ -1,5 +1,5 @@
 # zigzag_curve.txt — Stage 1 curved trajectory scenario.
-ttc 2.0 8.0 0.5
+ttc 2.0 8.0 0.5 9.0 3.0 1.0
 duration_s 60.0
 trajectory zigzag 100 0.3 0
 config 10.0 10000 1.0 0.3 72 0.5 42

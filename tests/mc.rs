@@ -8,7 +8,9 @@ fn ttc() -> Ttc {
     Ttc {
         v_min: 2.0,
         v_max: 8.0,
-        omega_max: 0.5,
+        a_lat: 9.0,
+        a_long: 3.0,
+        omega_cap: 1.0,
     }
 }
 
@@ -82,9 +84,10 @@ fn point_cloud_has_n_samples() {
 
 #[test]
 fn zero_turn_probability_concentrates_all_samples() {
-    // p_turn = 0 => omega = 0 for all samples => psi_new = last.psi = 0
-    // for every sample. All samples fall in bin 0, so both sectors are
-    // exactly one bin width (5 deg).
+    // With the OU turn-rate model, heading spreads over the horizon even
+    // when p_turn = 0 (the OU process is always active). The samples are
+    // concentrated near the last heading (psi = 0): the 50% sector is a
+    // small band, the 90% sector is wider, and the circular mean stays near 0.
     let o = obs();
     let t = ttc();
     let c = cfg(2000, 0.0, 1, 72);
@@ -94,21 +97,25 @@ fn zero_turn_probability_concentrates_all_samples() {
     let s50 = p.sector50;
     let s90 = p.sector90;
 
-    assert!((s50 - bin_width).abs() < 1e-9, "s50 = {}", s50);
-    assert!((s90 - bin_width).abs() < 1e-9, "s90 = {}", s90);
+    // 50% sector is a modest band (a few bins), 90% sector is wider.
+    assert!(s50 > bin_width, "s50 = {}", s50);
+    assert!(s90 > s50, "s90 = {}", s90);
+    assert!(s90 < 2.0 * PI, "s90 = {}", s90);
 
-    // Circular mean should be near 0 (last.psi).
-    assert!(p.final_heading_mean.abs() < 1e-6);
+    // Circular mean should be near 0 (last.psi), with a small offset from the
+    // OU noise over the horizon.
+    assert!(p.final_heading_mean.abs() < 1e-3);
 
-    // Exactly one non-empty bin.
+    // More than one bin is populated (OU spreads the headings).
     let nonzero = p.bin_probs.iter().filter(|&&x| x > 0.0).count();
-    assert_eq!(nonzero, 1);
+    assert!(nonzero > 1, "nonzero = {}", nonzero);
 }
 
 #[test]
 fn nonzero_turn_probability_spreads_sectors() {
-    // p_turn = 1 => omega drawn every time => heading distribution is
-    // spread over more bins => sector90 > 1 bin width.
+    // The OU turn-rate model is always active, so the heading distribution is
+    // spread over more bins than a single bin => sector90 is well over one bin
+    // width.
     let o = obs();
     let t = ttc();
     let c = cfg(5000, 1.0, 123, 72);
@@ -125,9 +132,11 @@ fn nonzero_turn_probability_spreads_sectors() {
 #[test]
 fn initial_position_noise_samples_from_cov() {
     // With cov = [1, 0, 1], the initial position noise has std 1 in each axis.
-    // p_turn = 0 => omega = 0 => psi_new = last.psi = 0 for all samples, so
-    // each final position = pos0 + v*T*[1, 0] = pos0 + [50, 0] + noise.
-    // The cloud is therefore centered near [50, 0] with std ~1 in x and y.
+    // The OU turn-rate model is always active, so over the 10 s horizon the
+    // heading drifts and the path curves — the final positions therefore
+    // spread around the straight-line endpoint [50, 0] rather than sitting
+    // exactly on it. The initial cov noise is one contributor; the mean
+    // stays near the deterministic endpoint.
     let o = obs();
     let t = ttc();
     let c = cfg(2000, 0.0, 5, 72);
@@ -136,10 +145,10 @@ fn initial_position_noise_samples_from_cov() {
     let mean_x: f64 = p.point_cloud.iter().map(|p| p[0]).sum::<f64>() / 2000.0;
     let mean_y: f64 = p.point_cloud.iter().map(|p| p[1]).sum::<f64>() / 2000.0;
 
-    // Noise is zero-mean, so means should be near the deterministic
-    // propagation endpoint [50, 0].
-    assert!((mean_x - 50.0).abs() < 0.2, "mean_x = {}", mean_x);
-    assert!(mean_y.abs() < 0.2, "mean_y = {}", mean_y);
+    // The cloud is centred near the straight-line endpoint [50, 0], with the
+    // OU-induced heading drift shifting x a bit below 50.
+    assert!((mean_x - 50.0).abs() < 15.0, "mean_x = {}", mean_x);
+    assert!(mean_y.abs() < 10.0, "mean_y = {}", mean_y);
 }
 
 #[test]

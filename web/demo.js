@@ -68,7 +68,7 @@ function resizeCanvas() {
 // ---- UI refs ---------------------------------------------------------------
 const el = (id) => document.getElementById(id);
 const inputs = {
-  seed: 'seed', v_min: 'v_min', v_max: 'v_max', omega_max: 'omega_max',
+  seed: 'seed', v_min: 'v_min', v_max: 'v_max', a_lat: 'a_lat', a_long: 'a_long', omega_cap: 'omega_cap',
   horizon_s: 'horizon_s', duration_s: 'duration_s', n_samples: 'n_samples',
   p_turn: 'p_turn', speed_noise_mps: 'speed_noise_mps', azimuth_bins: 'azimuth_bins',
 };
@@ -352,7 +352,9 @@ async function predict() {
       ttc: {
         v_min: val('v_min'),
         v_max: val('v_max'),
-        omega_max: val('omega_max'),
+        a_lat: val('a_lat'),
+        a_long: val('a_long'),
+        omega_cap: val('omega_cap'),
       },
       track: observations.map((o) => ({
         t: o.t, x: o.x, y: o.y, v: o.v, psi: o.psi,

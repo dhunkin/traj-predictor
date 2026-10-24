@@ -41,7 +41,9 @@ use predictor::types::{Observation, Ooi, PredictConfig, Ttc};
 struct TtcDto {
     v_min: f64,
     v_max: f64,
-    omega_max: f64,
+    a_lat: f64,
+    a_long: f64,
+    omega_cap: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,7 +145,9 @@ async fn predict_handler(Json(req): Json<PredictRequestDto>) -> Result<Json<Pred
     let ttc = Ttc {
         v_min: req.ttc.v_min,
         v_max: req.ttc.v_max,
-        omega_max: req.ttc.omega_max,
+        a_lat: req.ttc.a_lat,
+        a_long: req.ttc.a_long,
+        omega_cap: req.ttc.omega_cap,
     };
 
     let last = Observation {

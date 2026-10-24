@@ -16,7 +16,7 @@
 # Run: cargo run --example run_scenario -- scenarios/simple.txt
 
 # UAV performance limits (m/s, m/s, rad/s).
-ttc 2.0 8.0 0.5
+ttc 2.0 8.0 0.5 9.0 3.0 1.0
 
 # Observations. Positions lie on the true +X line (v = 5 m/s, psi = 0);
 # the cov field carries the observation noise used by predict().

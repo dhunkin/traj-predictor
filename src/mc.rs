@@ -16,7 +16,7 @@
 //! TODO(Stage2): replace initial-position sampling with filter state estimate.
 
 use crate::histogram::{bin_index, sector_width};
-use crate::motion::propagate;
+use crate::motion::{propagate_step};
 use crate::prng::Xoshiro256ss;
 use crate::types::{Observation, Ooi, PredictConfig, Prediction, Ttc};
 use crate::vec2::Mat2;
@@ -41,43 +41,50 @@ pub fn predict(
     let mut sum_sin = 0.0;
     let mut point_cloud = Vec::with_capacity(n_samples);
 
-    let omega_std = ttc.omega_max / 3.0;
+    // Time step for the OU propagation loop (defaults to 0.5 if unset).
+    let dt_step = if cfg.dt_s > 0.0 { cfg.dt_s } else { 0.5 };
 
     for _ in 0..n_samples {
         // 1. Sample initial position from last.pos + Cholesky(last.cov).
         let noise = cov_factor.sample(&mut rng);
-        let pos0 = [
+        let mut pos = [
             last.pos[0] + noise.x,
             last.pos[1] + noise.y,
         ];
+        let mut v = last.v;
+        let mut psi = last.psi;
+        let mut omega: f64 = 0.0;
 
-        // 2. Sample turn rate.
-        let omega = if rng.next_f64() < cfg.p_turn {
-            let w = rng.gauss(0.0, omega_std);
-            w.clamp(-ttc.omega_max, ttc.omega_max)
-        } else {
-            0.0
-        };
+        // 2. Time-step the state forward over [0, horizon_s] using the
+        //    Ornstein-Uhlenbeck turn-rate model with speed-dependent
+        //    lateral-acceleration limits.
+        let mut t = 0.0;
+        while t < cfg.horizon_s {
+            let (pos_new, psi_new, v_new, omega_new) = propagate_step(
+                pos,
+                v,
+                psi,
+                omega,
+                dt_step,
+                cfg.speed_noise_mps,
+                0.2,
+                &mut rng,
+                ttc,
+            );
+            pos = pos_new;
+            psi = psi_new;
+            v = v_new;
+            omega = omega_new;
+            t += dt_step;
+        }
 
-        // 3. Propagate analytically for horizon_s.
-        let (pos_new, psi_new, _v_new, _omega_new) = propagate(
-            pos0,
-            last.v,
-            last.psi,
-            omega,
-            cfg.horizon_s,
-            cfg.speed_noise_mps,
-            &mut rng,
-            ttc,
-        );
-
-        // 4. Store final (pos, psi).
-        point_cloud.push(pos_new);
-        let idx = bin_index(psi_new, n_bins);
+        // 3. Store final (pos, psi).
+        point_cloud.push(pos);
+        let idx = bin_index(psi, n_bins);
         bin_counts[idx] += 1;
 
-        sum_cos += psi_new.cos();
-        sum_sin += psi_new.sin();
+        sum_cos += psi.cos();
+        sum_sin += psi.sin();
     }
 
     // Histogram density (sums to 1).

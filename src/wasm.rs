@@ -64,7 +64,9 @@ impl Simulator {
         seed: u64,
         v_min: f64,
         v_max: f64,
-        omega_max: f64,
+        a_lat: f64,
+        a_long: f64,
+        omega_cap: f64,
         dt_obs: f64,
         cov_xx: f64,
         cov_xy: f64,
@@ -75,7 +77,9 @@ impl Simulator {
             ttc: Ttc {
                 v_min,
                 v_max,
-                omega_max,
+                a_lat,
+                a_long,
+                omega_cap,
             },
             dt_obs_s: dt_obs,
             obs_cov: [cov_xx, cov_xy, cov_yy],
@@ -226,12 +230,20 @@ pub struct Predictor {
 #[wasm_bindgen]
 impl Predictor {
     #[wasm_bindgen(constructor)]
-    pub fn new(v_min: f64, v_max: f64, omega_max: f64) -> Predictor {
+    pub fn new(
+        v_min: f64,
+        v_max: f64,
+        a_lat: f64,
+        a_long: f64,
+        omega_cap: f64,
+    ) -> Predictor {
         Predictor {
             ttc: Ttc {
                 v_min,
                 v_max,
-                omega_max,
+                a_lat,
+                a_long,
+                omega_cap,
             },
         }
     }

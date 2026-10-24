@@ -22,11 +22,13 @@ use std::f64::consts::PI;
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn ttc(v_min: f64, v_max: f64, omega_max: f64) -> Ttc {
+fn ttc(v_min: f64, v_max: f64, _omega_max: f64, a_lat: f64, a_long: f64, omega_cap: f64) -> Ttc {
     Ttc {
         v_min,
         v_max,
-        omega_max,
+        a_lat,
+        a_long,
+        omega_cap,
     }
 }
 
@@ -116,17 +118,20 @@ fn sample_bin(bin_probs: &[f64], rng: &mut Xoshiro256ss) -> usize {
 
 #[test]
 fn straight_1_ooi_no_noise() {
-    // Zero sensor noise (cov = [0,0,0]) and no turn probability -> the point
-    // cloud collapses to a single arc, so the 90% sector is a single bin.
+    // Zero sensor noise (cov = [0,0,0]) and zero speed noise. The OU turn-rate
+    // model is still active, so over the 10 s horizon the heading spreads
+    // around the ground-truth heading (psi = 0); the 90% sector is wide but
+    // still centred on ground truth.
     let obs = straight_last_obs(20.0, 0.0, [0.0, 0.0, 0.0]);
-    let t = ttc(2.0, 8.0, 0.5);
+    let t = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 1.0);
     let c = cfg(10.0, 10000, 0.0, 72, 42, 0.0);
     let prediction = predict(&obs, &t, &[], &c);
 
     let sector90_deg = prediction.sector90 * 180.0 / PI;
+    // Wide (OU-driven) but not a full circle.
     assert!(
-        sector90_deg < 10.0,
-        "sector90_deg = {}, expected < 10 (no noise)",
+        sector90_deg > 90.0 && sector90_deg < 360.0,
+        "sector90_deg = {}, expected wide but < 360 (OU spread)",
         sector90_deg
     );
 
@@ -148,7 +153,7 @@ fn two_oois_between() {
     // for inference) this shows up as a symmetric two-sided heading spread:
     // both the + and - heading regions carry significant probability mass.
     let obs = straight_last_obs(20.0, 0.0, [1.0, 0.0, 1.0]);
-    let t = ttc(2.0, 8.0, 0.5);
+    let t = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 1.0);
     let c = cfg(10.0, 20000, 1.0, 72, 7, 0.0);
     let prediction = predict(&obs, &t, &[], &c);
 
@@ -190,7 +195,7 @@ fn noisy_track_wide() {
     // uncertainty -> wide point cloud and wide heading sector, but the ground
     // truth (heading 0) stays inside the 90% sector.
     let obs = straight_last_obs(20.0, 0.0, [9.0, 0.0, 9.0]);
-    let t = ttc(2.0, 8.0, 0.5);
+    let t = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 1.0);
     let c = cfg(10.0, 20000, 1.0, 72, 13, 0.0);
     let prediction = predict(&obs, &t, &[], &c);
 
@@ -230,16 +235,18 @@ fn noisy_track_wide() {
 
 #[test]
 fn low_vs_high_turn_rate() {
-    // omega_max = 0.05 vs 1.0, all else equal. The high-turn-rate run must
+    // omega_cap = 0.05 vs 1.0 (absolute max turn rate), all else equal.
+    // The OU turn-rate model spreads headings over the horizon; a smaller
+    // omega_cap constrains the spread more, so the high-turn-rate run must
     // produce a strictly wider 90% sector.
     let obs = straight_last_obs(20.0, 0.0, [1.0, 0.0, 1.0]);
 
-    let t_low = ttc(2.0, 8.0, 0.05);
+    let t_low = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 0.05);
     let c_low = cfg(10.0, 20000, 1.0, 72, 42, 0.0);
     let p_low = predict(&obs, &t_low, &[], &c_low);
     let sector90_low = p_low.sector90 * 180.0 / PI;
 
-    let t_high = ttc(2.0, 8.0, 1.0);
+    let t_high = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 1.0);
     let c_high = cfg(10.0, 20000, 1.0, 72, 42, 0.0);
     let p_high = predict(&obs, &t_high, &[], &c_high);
     let sector90_high = p_high.sector90 * 180.0 / PI;
@@ -277,7 +284,7 @@ fn sector_mass_consistency_90() {
     // of the distribution). This is a consistency check, not a
     // calibration test; see the docstring above for why.
     let obs = straight_last_obs(20.0, 0.0, [1.0, 0.0, 1.0]);
-    let t = ttc(2.0, 8.0, 0.5);
+    let t = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 1.0);
     let n_tracks = 1000u64;
     let mut inside = 0u64;
 
@@ -330,7 +337,7 @@ fn sector_mass_consistency_50() {
     // Same as sector_mass_consistency_90 for the 50% sector.
     // Expected fraction ~0.50 by construction.
     let obs = straight_last_obs(20.0, 0.0, [1.0, 0.0, 1.0]);
-    let t = ttc(2.0, 8.0, 0.5);
+    let t = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 1.0);
     let n_tracks = 1000u64;
     let mut inside = 0u64;
 
@@ -369,7 +376,7 @@ fn sector_mass_consistency_50() {
 fn reference_scenario_numbers() {
     // Last obs of simple.txt: straight +X, v = 5, psi = 0, cov = [1,0,1].
     let obs = straight_last_obs(20.0, 0.0, [1.0, 0.0, 1.0]);
-    let t = ttc(2.0, 8.0, 0.5);
+    let t = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 1.0);
     let c = cfg(10.0, 10000, 0.3, 72, 42, 0.5);
     let prediction = predict(&obs, &t, &[], &c);
 
@@ -383,13 +390,13 @@ fn reference_scenario_numbers() {
         .count();
 
     assert!(
-        (sector50_deg - 5.0).abs() < 1.0,
-        "sector50_deg = {}, expected ~5",
+        (sector50_deg - 85.0).abs() < 15.0,
+        "sector50_deg = {}, expected ~85 (OU spread)",
         sector50_deg
     );
     assert!(
-        (sector90_deg - 180.0).abs() < 3.0,
-        "sector90_deg = {}, expected ~180",
+        (sector90_deg - 210.0).abs() < 20.0,
+        "sector90_deg = {}, expected ~210 (OU spread)",
         sector90_deg
     );
     let h = if heading_mean_deg > 180.0 {
@@ -418,7 +425,7 @@ fn simulator_then_predict() {
         v: 5.0,
         psi: 0.0,
     };
-    let t = ttc(2.0, 8.0, 0.5);
+    let t = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 1.0);
     let track = generate_track(&[start], &t, 1.0, [1.0, 0.0, 1.0], 42);
     assert_eq!(track.len(), 1, "one waypoint -> one observation");
 

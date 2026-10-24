@@ -12,7 +12,9 @@ fn ttc() -> Ttc {
     Ttc {
         v_min: 2.0,
         v_max: 8.0,
-        omega_max: 0.5,
+        a_lat: 9.0,
+        a_long: 3.0,
+        omega_cap: 1.0,
     }
 }
 

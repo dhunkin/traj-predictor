@@ -11,7 +11,9 @@ fn omega_zero_is_straight_line() {
     let ttc = Ttc {
         v_min: 0.0,
         v_max: 100.0,
-        omega_max: 1.0,
+        a_lat: 9.0,
+        a_long: 3.0,
+        omega_cap: 1.0,
     };
     let mut rng = Xoshiro256ss::from_seed(1);
     // psi = 0 -> move along +X. No speed noise so it's exact.
@@ -34,7 +36,9 @@ fn omega_max_traces_circle_of_radius_v_over_omega() {
     let ttc = Ttc {
         v_min: 0.0,
         v_max: 100.0,
-        omega_max,
+        omega_cap: omega_max,
+        a_lat: 9.0,
+        a_long: 3.0,
     };
     let mut rng = Xoshiro256ss::from_seed(2);
     let t = 2.0 * std::f64::consts::PI / omega_max; // one full revolution
@@ -86,7 +90,9 @@ fn speed_is_clamped() {
     let ttc = Ttc {
         v_min: 2.0,
         v_max: 8.0,
-        omega_max: 1.0,
+        a_lat: 9.0,
+        a_long: 3.0,
+        omega_cap: 1.0,
     };
     let mut rng = Xoshiro256ss::from_seed(3);
     // v=100, huge noise, omega=0 -> straight line. Per BUG 1 fix, position
@@ -105,27 +111,28 @@ fn speed_is_clamped() {
     assert!((v2 - 2.0).abs() < 1e-9, "v clamped low: {}", v2);
 }
 
-/// Omega clamping: omega beyond omega_max is returned clamped in omega_new,
-/// while the arc geometry still uses the (un-clamped) input omega.
+/// Omega clamping: omega beyond omega_cap is returned clamped in omega_new.
 #[test]
 fn omega_is_clamped_in_return_value() {
     let ttc = Ttc {
         v_min: 0.0,
         v_max: 100.0,
-        omega_max: 0.3,
+        a_lat: 9.0,
+        a_long: 3.0,
+        omega_cap: 1.0,
     };
     let mut rng = Xoshiro256ss::from_seed(4);
-    // omega = 5.0 -> omega_new clamped to 0.3.
+    // omega = 5.0 -> omega_new clamped to omega_cap (1.0).
     let (_pos, _psi, _v, omega) = propagate(
         [0.0, 0.0], 10.0, 0.0, 5.0, 1.0, 0.0, &mut rng, &ttc,
     );
-    assert!((omega - 0.3).abs() < 1e-9, "omega clamped high: {}", omega);
+    assert!((omega - 1.0).abs() < 1e-9, "omega clamped high: {}", omega);
 
-    // omega = -5.0 -> omega_new clamped to -0.3.
+    // omega = -5.0 -> omega_new clamped to -omega_cap (-1.0).
     let (_pos2, _psi2, _v2, omega2) = propagate(
         [0.0, 0.0], 10.0, 0.0, -5.0, 1.0, 0.0, &mut rng, &ttc,
     );
-    assert!((omega2 - (-0.3)).abs() < 1e-9, "omega clamped low: {}", omega2);
+    assert!((omega2 - (-1.0)).abs() < 1e-9, "omega clamped low: {}", omega2);
 }
 
 /// Determinism: same seed + same input => bit-identical output.
@@ -134,7 +141,9 @@ fn propagation_is_deterministic() {
     let ttc = Ttc {
         v_min: 0.0,
         v_max: 100.0,
-        omega_max: 0.4,
+        a_lat: 9.0,
+        a_long: 3.0,
+        omega_cap: 1.0,
     };
     let mut a = Xoshiro256ss::from_seed(7);
     let mut b = Xoshiro256ss::from_seed(7);

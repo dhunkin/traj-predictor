@@ -3,11 +3,13 @@
 
 // ---- Placeholder items for Step 1 (filled in later steps) ----
 
-#[derive(Clone)]
-pub struct KinState {
-    pub pos: [f64; 2],
-    pub v: f64,
-    pub psi: f64,
+#[derive(Debug, Clone, Copy)]
+pub struct Ttc {
+    pub v_min: f64,
+    pub v_max: f64,
+    pub a_lat: f64,      // max lateral acceleration (m/s^2), e.g., 9.0
+    pub a_long: f64,     // max longitudinal accel/decel (m/s^2), e.g., 3.0
+    pub omega_cap: f64,  // absolute max turn rate (rad/s), e.g., 1.0
 }
 
 pub struct Observation {
@@ -18,14 +20,14 @@ pub struct Observation {
     pub cov: [f64; 3],    // [xx, xy, yy]
 }
 
-pub struct Ttc {
-    pub v_min: f64,
-    pub v_max: f64,
-    pub omega_max: f64,
-}
-
 pub struct Ooi {
     pub pos: [f64; 2],
+}
+
+pub struct KinState {
+    pub pos: [f64; 2],
+    pub v: f64,           // m/s
+    pub psi: f64,         // rad, 0 = +X
 }
 
 pub struct PredictConfig {

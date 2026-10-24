@@ -77,11 +77,15 @@ fn parse_scenario(path: &str) -> (Ttc, Vec<Observation>, Vec<Ooi>, PredictConfig
             "ttc" => {
                 let v_min = parse_f64(it.next().unwrap_or("0"), "ttc v_min");
                 let v_max = parse_f64(it.next().unwrap_or("0"), "ttc v_max");
-                let omega_max = parse_f64(it.next().unwrap_or("0"), "ttc omega_max");
+                let a_lat = parse_f64(it.next().unwrap_or("9.0"), "ttc a_lat");
+                let a_long = parse_f64(it.next().unwrap_or("3.0"), "ttc a_long");
+                let omega_cap = parse_f64(it.next().unwrap_or("1.0"), "ttc omega_cap");
                 ttc = Some(Ttc {
                     v_min,
                     v_max,
-                    omega_max,
+                    a_lat,
+                    a_long,
+                    omega_cap,
                 });
             }
             "obs" => {
