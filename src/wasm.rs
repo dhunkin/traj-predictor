@@ -172,7 +172,7 @@ impl Simulator {
         let traj = Trajectory::Zigzag {
             segment_m: segment,
             angle_rad: angle,
-            baseline,
+            baseline_m: baseline,
         };
         generate_curved_track(&traj, speed, duration, self.dt_obs_s, self.obs_cov, self.seed)
             .into_flat()

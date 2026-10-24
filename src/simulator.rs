@@ -30,27 +30,27 @@ pub enum Trajectory {
         direction: f64,
     },
     /// Zigzag: legs of length `segment_m`, each tilted `angle_rad` from +x
-    /// (alternating +angle / -angle), offset by `baseline` from +x.
+    /// (alternating +angle / -angle), offset by `baseline_m` from +x.
     Zigzag {
         segment_m: f64,
         angle_rad: f64,
-        baseline: f64,
+        baseline_m: f64,
     },
 }
 
 /// Generate a synthetic track for a curved (or straight) trajectory.
 ///
-/// The path is sampled analytically at a dense time grid
-/// (`dt_obs_s / 20`) so per-observation position, speed, and heading are
-/// computed directly from the trajectory formula — `propagate()` is never
-/// called. Per-observation Gaussian noise of covariance `obs_cov` is drawn
-/// from `Mat2::from_cov(obs_cov).sample(&mut rng)`.
+/// Each observation is sampled analytically at `t_k = k * dt_obs_s`
+/// (`k = 0..=floor(duration / dt_obs`): position, heading, and speed are all
+/// computed directly from the trajectory formula via `sample_point` — the
+/// dense time grid and `propagate()` are never used. Per-observation Gaussian
+/// noise of covariance `obs_cov` is drawn from
+/// `Mat2::from_cov(obs_cov).sample(&mut rng)`.
 ///
 /// `speed` is the forward speed used for `Straight` (arc length `s = speed*t`)
 /// and for the Zigzag timing (`t_i = i * segment_m / speed`). For `Spiral`
 /// the tangential speed is not constant; the time-uniform parametrization
-/// (theta grows linearly in t) is used and `v` is derived from finite
-/// differences of consecutive dense points.
+/// (theta grows linearly in t) is used and `v` is derived analytically.
 pub fn generate_curved_track(
     traj: &Trajectory,
     speed: f64,
@@ -61,24 +61,6 @@ pub fn generate_curved_track(
 ) -> Vec<Observation> {
     assert!(dt_obs_s > 0.0, "dt_obs_s must be positive");
 
-    // Dense sampling: 20 samples per observation interval.
-    let dt_dense = dt_obs_s / 20.0;
-    let n_dense = (duration_s / dt_dense).floor() as usize;
-
-    // Analytic dense positions + per-point heading and speed.
-    let mut dense_pos: Vec<[f64; 2]> = Vec::with_capacity(n_dense + 1);
-    let mut dense_heading: Vec<f64> = Vec::with_capacity(n_dense + 1);
-    let mut dense_speed: Vec<f64> = Vec::with_capacity(n_dense + 1);
-
-    // Compute dense points.
-    for i in 0..=n_dense {
-        let t = i as f64 * dt_dense;
-        let (pos, heading, sp) = sample_point(traj, t, duration_s, speed);
-        dense_pos.push(pos);
-        dense_heading.push(heading);
-        dense_speed.push(sp);
-    }
-
     let mut rng = Xoshiro256ss::from_seed(seed);
     let mat = Mat2::from_cov(obs_cov);
 
@@ -88,21 +70,9 @@ pub fn generate_curved_track(
     let mut observations = Vec::with_capacity(n_obs + 1);
     for k in 0..=n_obs {
         let t = k as f64 * dt_obs_s;
-        // Nearest dense sample to t_k.
-        let idx = (t / dt_dense).round() as usize;
-        let idx = idx.min(n_dense);
-        let pos = dense_pos[idx];
-
-        // Heading psi = atan2(pos[k] - pos[k-1], ...) for k >= 1; for k = 0
-        // use the dense heading at t = 0.
-        let psi = if k == 0 {
-            dense_heading[0]
-        } else {
-            let prev = dense_pos[idx - 1];
-            (pos[1] - prev[1]).atan2(pos[0] - prev[0])
-        };
-
-        let v = dense_speed[idx];
+        // Sample analytically: position, heading, and speed are all computed
+        // directly from the trajectory formula at t_k.
+        let (pos, psi, v) = sample_point(traj, t, duration_s, speed);
 
         let noise = mat.sample(&mut rng);
         observations.push(Observation {
@@ -151,14 +121,16 @@ fn sample_point(
             amplitude_m,
             direction,
         } => {
-            // Analytic derivatives.
+            // Analytic derivatives. Distance along the baseline is `a = s`
+            // (not `s * cos(direction)`), and `dadt = speed`.
             let s = speed * t;
-            let a = s * direction.cos();
-            let dadt = speed * direction.cos();
+            let a = s;
+            let dadt = speed;
             let k = 2.0 * std::f64::consts::PI / wavelength_m;
             let ya = amplitude_m * (k * a).sin();
             let dyada = amplitude_m * k * (k * a).cos();
             let dyadt = dyada * dadt;
+            
             let pos = [
                 a * direction.cos() - ya * direction.sin(),
                 a * direction.sin() + ya * direction.cos(),
@@ -172,33 +144,29 @@ fn sample_point(
         Trajectory::Zigzag {
             segment_m,
             angle_rad,
-            baseline,
+            baseline_m,
         } => {
             let dx_leg = segment_m * angle_rad.cos();
             let h = segment_m * angle_rad.sin() / 2.0;
-            // Time at vertex i: t_i = i * segment_m / speed.
-            let vertex_time = |i: usize| (i as f64) * *segment_m / speed;
+            // Time per segment.
             let per_seg = *segment_m / speed;
-            // Walk to the vertex interval [i, i+1] that contains t.
+            // Vertex index i: the leg [i, i+1] containing t.
             let max_i = (duration_s / per_seg).floor() as usize;
-            let mut i = 0usize;
-            while i < max_i && vertex_time(i + 1) <= t {
-                i += 1;
-            }
+            let i = (t / per_seg).floor() as usize;
             let i = i.min(max_i);
-            let t0 = vertex_time(i);
-            let t1 = vertex_time(i + 1);
+            let t0 = (i as f64) * per_seg;
+            let t1 = (i + 1) as f64 * per_seg;
             let dt_seg = (t1 - t0).max(1e-9);
             let frac = ((t - t0) / dt_seg).min(1.0);
             // Vertex i and i+1 y-offsets alternate +h / -h.
-            let y0 = baseline + if i % 2 == 0 { h } else { -h };
-            let y1 = baseline + if (i + 1) % 2 == 0 { h } else { -h };
+            let y0 = baseline_m + if i % 2 == 0 { h } else { -h };
+            let y1 = baseline_m + if (i + 1) % 2 == 0 { h } else { -h };
             let x0 = i as f64 * dx_leg;
             let x1 = (i + 1) as f64 * dx_leg;
             let pos = [x0 + (x1 - x0) * frac, y0 + (y1 - y0) * frac];
             // Heading along the leg: alternating -angle / +angle from +x.
-            // Vertex i (even) is at y = baseline + h (above), vertex i+1
-            // (odd) at y = baseline - h (below), so leg 0 descends => heading
+            // Vertex i (even) is at y = baseline_m + h (above), vertex i+1
+            // (odd) at y = baseline_m - h (below), so leg 0 descends => heading
             // is -angle_rad.
             let leg_angle = if i % 2 == 0 { -*angle_rad } else { *angle_rad };
             (pos, leg_angle, speed)

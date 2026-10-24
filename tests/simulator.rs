@@ -268,7 +268,7 @@ fn curved_zigzag_alternates() {
     let traj = Trajectory::Zigzag {
         segment_m: 100.0,
         angle_rad: 0.3,
-        baseline: 0.0,
+        baseline_m: 0.0,
     };
     let obs_cov = [0.0, 0.0, 0.0];
     let speed = 5.0;
@@ -366,7 +366,7 @@ fn zigzag_psi_sign_matches_geometry() {
     let traj = Trajectory::Zigzag {
         segment_m: 100.0,
         angle_rad: 0.3,
-        baseline: 0.0,
+        baseline_m: 0.0,
     };
     let obs_cov = [0.0, 0.0, 0.0];
     let speed = 5.0;

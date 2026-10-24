@@ -247,7 +247,7 @@ async fn simulate_handler(Json(req): Json<SimulateRequestDto>) -> Result<Json<Si
         "zigzag" => Trajectory::Zigzag {
             segment_m: get(0, "segment_m")?,
             angle_rad: get(1, "angle_rad")?,
-            baseline: get(2, "baseline")?,
+            baseline_m: get(2, "baseline")?,
         },
         other => {
             return Err((

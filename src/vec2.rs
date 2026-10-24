@@ -61,15 +61,14 @@ impl Vec2 {
 
 /// Lower-triangular Cholesky factor of a 2x2 covariance matrix.
 ///
-/// Built from `[xx, xy, yy]` (variances + covariance) as:
-///   L11 = sqrt(xx)
-///   L21 = xy / L11
-///   L22 = sqrt(yy - L21^2)
+/// Built from `[xx, xy, yy]` (variances + covariance) via the
+/// correlation-parametrized decomposition:
+///   sx = sqrt(xx), sy = sqrt(yy)
+///   rho = clamp(xy / (sx * sy), -1, 1)
+///   L11 = sx, L21 = rho * sy, L22 = sy * sqrt(1 - rho^2)
 ///
-/// Degenerate handling:
-///   - xx == 0 && yy == 0 -> zero noise (identity-free zero factor).
-///   - xx == 0 && yy > 0   -> swap axes so the non-zero variance lands on
-///     the diagonal (documented choice; see below).
+/// Degenerate handling: if either standard deviation is zero the factor is
+/// diagonal (`L11 = sx`, `L22 = sy`, `L21 = 0`).
 #[derive(Debug, Clone, Copy)]
 pub struct Mat2 {
     pub l11: f64,
@@ -80,40 +79,13 @@ pub struct Mat2 {
 impl Mat2 {
     /// Build a Cholesky factor from `[xx, xy, yy]`.
     pub fn from_cov(cov: [f64; 3]) -> Self {
-        let (xx, xy, yy) = (cov[0], cov[1], cov[2]);
-        debug_assert!(xx >= 0.0, "xx must be a variance, got {xx}");
-        debug_assert!(yy >= 0.0, "yy must be a variance, got {yy}");
-        debug_assert!(
-            xy * xy <= xx * yy + 1e-12,
-            "covariance is not PSD: xy^2 = {}, xx*yy = {}",
-            xy * xy,
-            xx * yy
-        );
-        if xx == 0.0 && yy == 0.0 {
-            // Degenerate: zero noise.
-            return Mat2 {
-                l11: 0.0,
-                l21: 0.0,
-                l22: 0.0,
-            };
+        let sx = cov[0].max(0.0).sqrt();
+        let sy = cov[2].max(0.0).sqrt();
+        if sx == 0.0 || sy == 0.0 {
+            return Mat2 { l11: sx, l21: 0.0, l22: sy };
         }
-        if xx == 0.0 {
-            // xx == 0, yy > 0: swap axes. The variance now lives on the
-            // y-axis; L22 = sqrt(yy), off-diagonal zero.
-            return Mat2 {
-                l11: 0.0,
-                l21: 0.0,
-                l22: yy.sqrt(),
-            };
-        }
-        let l11 = xx.sqrt();
-        let l21 = xy / l11;
-        let l22 = (yy - l21 * l21).max(0.0).sqrt();
-        Mat2 {
-            l11,
-            l21,
-            l22,
-        }
+        let rho = (cov[1] / (sx * sy)).clamp(-1.0, 1.0);
+        Mat2 { l11: sx, l21: rho * sy, l22: sy * (1.0 - rho * rho).sqrt() }
     }
 
     /// Apply the factor to a standard-normal pair: `L * [a, b]`.

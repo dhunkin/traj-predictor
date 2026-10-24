@@ -126,7 +126,7 @@ fn parse_scenario(path: &str) -> (Ttc, Vec<Observation>, Vec<Ooi>, PredictConfig
                     "zigzag" => Trajectory::Zigzag {
                         segment_m: parse_f64(it.next().unwrap_or("0"), "trajectory segment_m"),
                         angle_rad: parse_f64(it.next().unwrap_or("0"), "trajectory angle_rad"),
-                        baseline: parse_f64(it.next().unwrap_or("0"), "trajectory baseline"),
+                        baseline_m: parse_f64(it.next().unwrap_or("0"), "trajectory baseline"),
                     },
                     other => {
                         eprintln!("error: unknown trajectory kind: {}", other);
