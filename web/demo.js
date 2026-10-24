@@ -44,6 +44,9 @@ const map = new maplibregl.Map({
   zoom: 18,
 });
 
+// ---- Zoom controls (FIX 1) -----------------------------------------------
+map.addControl(new maplibregl.NavigationControl(), 'top-left');
+
 // ---- Canvas overlay --------------------------------------------------------
 const fan = document.getElementById('fan');
 const ctx = fan.getContext('2d');
@@ -139,11 +142,15 @@ function draw() {
   let maxP = 0;
   for (const p of binProbs) if (p > maxP) maxP = p;
 
+  // FIX 4a: skip low-prob bins so the fan tail is cut, not a full disc.
+  const REL_THRESHOLD = 0.05;
+
   ctx.save();
   ctx.lineWidth = 1;
   for (let i = 0; i < binCenters.length; i++) {
     const p = binProbs[i];
     if (p <= 0) continue;
+    if (p < REL_THRESHOLD * maxP) continue;
     const a = binCenters[i];
     const a0 = a - binWidth / 2;
     const a1 = a + binWidth / 2;
@@ -155,7 +162,8 @@ function draw() {
 
     const norm = maxP > 0 ? p / maxP : 0;
     const hue = 240 * (1 - norm); // blue (low) -> red (high)
-    const alpha = 0.25 + 0.6 * norm;
+    // FIX 4b: steepen alpha so low-prob bins fade toward 0.15.
+    const alpha = 0.15 + 0.75 * Math.pow(norm, 1.5);
     ctx.beginPath();
     ctx.moveTo(ax, ay);
     ctx.lineTo(x0, y0);
@@ -310,11 +318,21 @@ async function simulate() {
     draw();
     status('track simulated: ' + observations.length + ' observations');
 
-    // Center the scenario start in the left half of the viewport so the
-    // prediction fan opens into empty space on the right (BUG 2).
-    if (map.isStyleLoaded()) {
-      const [lng, lat] = metersToLngLat(lastObservation.x, lastObservation.y);
-      map.easeTo({ center: [lng, lat], zoom: 16, duration: 800 });
+    // FIX 2: fit map to track + fan extents after Simulate.
+    if (map.isStyleLoaded() && observations.length) {
+      const vMean = (val('v_min') + val('v_max')) / 2;
+      const fanLen = val('horizon_s') * vMean;
+      const last = lastObservation;
+      const pts = observations.map(o => metersToLngLat(o.x, o.y));
+      pts.push(
+        metersToLngLat(last.x + fanLen, last.y),
+        metersToLngLat(last.x - fanLen, last.y),
+        metersToLngLat(last.x, last.y + fanLen),
+        metersToLngLat(last.x, last.y - fanLen),
+      );
+      const bounds = new maplibregl.LngLatBounds();
+      pts.forEach(p => bounds.extend(p));
+      map.fitBounds(bounds, { padding: 80, duration: 800 });
     }
   });
 }
@@ -330,8 +348,10 @@ async function predict() {
     const azimuthBins = Math.round(val('azimuth_bins'));
     const t0 = performance.now();
 
-    pred = new Predictor(val('v_min'), val('v_max'), val('omega_max'));
-    const res = pred.predict(
+    // FIX 3: free the Predictor instance (pred is reassigned to a plain
+    // object, so the wasm object would otherwise leak).
+    const predictor = new Predictor(val('v_min'), val('v_max'), val('omega_max'));
+    const res = predictor.predict(
       last.t, last.x, last.y,
       last.cov_xx, last.cov_xy, last.cov_yy,
       last.psi, last.v,
@@ -348,12 +368,16 @@ async function predict() {
       sector90: res.sector90(),
     };
     res.free();
+    predictor.free();
 
     // Stats (radians -> degrees).
     el('s50').textContent = (pred.sector50 * 180 / Math.PI).toFixed(1);
     el('s90').textContent = (pred.sector90 * 180 / Math.PI).toFixed(1);
     el('smean').textContent = (pred.final_heading_mean * 180 / Math.PI).toFixed(1);
     el('selapsed').textContent = Math.round(performance.now() - t0);
+    // FIX 4c: n_bins_nonzero stat.
+    const nz = pred.bin_probs.reduce((a, p) => a + (p > 0 ? 1 : 0), 0);
+    el('snz').textContent = nz;
 
     draw();
     status('prediction complete');
