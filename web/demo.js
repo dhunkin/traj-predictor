@@ -345,13 +345,19 @@ async function predict() {
     const azimuthBins = Math.round(val('azimuth_bins'));
     const t0 = performance.now();
 
-    // POST to the server and parse the prediction result.
+    // Stage 2: send the full observations array as `track`. The server runs
+    // the Kalman filter over it and feeds the smoothed state to predict().
+    // `last_observation` is kept as the last point for backward compat.
     const res = await apiPost('/api/predict', {
       ttc: {
         v_min: val('v_min'),
         v_max: val('v_max'),
         omega_max: val('omega_max'),
       },
+      track: observations.map((o) => ({
+        t: o.t, x: o.x, y: o.y, v: o.v, psi: o.psi,
+        cov_xx: o.cov_xx, cov_xy: o.cov_xy, cov_yy: o.cov_yy,
+      })),
       last_observation: {
         t: last.t,
         x: last.x,

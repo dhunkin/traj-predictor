@@ -4,6 +4,7 @@
 //! The native (non-wasm) target compiles with `default = []`.
 //! The `wasm` feature pulls in wasm-bindgen + js-sys only.
 
+pub mod filter;
 pub mod histogram;
 pub mod mc;
 pub mod motion;
@@ -21,3 +22,4 @@ pub use types::{
 
 pub use mc::predict;
 pub use simulator::generate_track;
+pub use filter::filter_track;

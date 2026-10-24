@@ -30,6 +30,7 @@ use axum::Router;
 
 use serde::{Deserialize, Serialize};
 
+use predictor::filter::filter_track;
 use predictor::mc::predict;
 use predictor::simulator::{generate_curved_track, Trajectory};
 use predictor::types::{Observation, Ooi, PredictConfig, Ttc};
@@ -49,7 +50,7 @@ struct OoiDto {
     y: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 struct ObservationDto {
     t: f64,
     x: f64,
@@ -90,6 +91,13 @@ struct PredictConfigDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PredictRequestDto {
     ttc: TtcDto,
+    // Stage 2: send the full track. The server runs filter::filter_track over
+    // it and feeds the smoothed state to mc::predict(). Kept last_observation
+    // optional for backward compatibility; if track is empty, last_observation
+    // is used as a single-element track.
+    #[serde(default)]
+    track: Vec<ObservationDto>,
+    #[serde(default)]
     last_observation: ObservationDto,
     oois: Vec<OoiDto>,
     config: PredictConfigDto,
@@ -158,6 +166,27 @@ async fn predict_handler(Json(req): Json<PredictRequestDto>) -> Result<Json<Pred
         })
         .collect();
 
+    // Stage 2: build the full track from the request. If the client sends a
+    // non-empty track, filter it and feed the smoothed state to predict();
+    // otherwise fall back to the single last_observation.
+    let track: Vec<Observation> = req
+        .track
+        .iter()
+        .map(|o| Observation {
+            t: o.t,
+            pos: [o.x, o.y],
+            v: o.v,
+            psi: o.psi,
+            cov: [o.cov_xx, o.cov_xy, o.cov_yy],
+        })
+        .collect();
+
+    let smoothed = if track.len() > 1 {
+        filter_track(&track)
+    } else {
+        last
+    };
+
     let cfg = PredictConfig {
         horizon_s: req.config.horizon_s,
         n_samples: req.config.n_samples,
@@ -168,8 +197,8 @@ async fn predict_handler(Json(req): Json<PredictRequestDto>) -> Result<Json<Pred
         seed: req.config.seed,
     };
 
-    // Call the core Monte-Carlo engine.
-    let prediction = predict(&last, &ttc, &oois, &cfg);
+    // Call the core Monte-Carlo engine with the smoothed state estimate.
+    let prediction = predict(&smoothed, &ttc, &oois, &cfg);
 
     // Map result back to the response DTO.
     let point_cloud: Vec<f64> = prediction
