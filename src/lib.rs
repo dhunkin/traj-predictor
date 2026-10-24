@@ -8,6 +8,7 @@ pub mod filter;
 pub mod histogram;
 pub mod mc;
 pub mod motion;
+pub mod particle;
 pub mod prng;
 pub mod simulator;
 pub mod types;
