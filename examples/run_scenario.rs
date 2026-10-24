@@ -13,6 +13,7 @@
 //! Manual parsing with std::env::args + split_whitespace. No new deps.
 
 use predictor::mc::predict;
+use predictor::simulator::{generate_curved_track, Trajectory};
 use predictor::types::{Observation, Ooi, PredictConfig, Ttc};
 use std::env;
 use std::f64::consts::PI;
@@ -52,7 +53,7 @@ fn parse_u64(s: &str, ctx: &str) -> u64 {
         })
 }
 
-fn parse_scenario(path: &str) -> (Ttc, Vec<Observation>, Vec<Ooi>, PredictConfig) {
+fn parse_scenario(path: &str) -> (Ttc, Vec<Observation>, Vec<Ooi>, PredictConfig, Option<Trajectory>, f64) {
     let contents = std::fs::read_to_string(path).unwrap_or_else(|e| {
         eprintln!("error: cannot read scenario file {}: {}", path, e);
         process::exit(1);
@@ -62,6 +63,8 @@ fn parse_scenario(path: &str) -> (Ttc, Vec<Observation>, Vec<Ooi>, PredictConfig
     let mut observations: Vec<Observation> = Vec::new();
     let mut oois: Vec<Ooi> = Vec::new();
     let mut config: Option<PredictConfig> = None;
+    let mut trajectory: Option<Trajectory> = None;
+    let mut duration_s: f64 = 60.0;
 
     for raw in contents.lines() {
         let line = raw.trim();
@@ -101,6 +104,37 @@ fn parse_scenario(path: &str) -> (Ttc, Vec<Observation>, Vec<Ooi>, PredictConfig
                 let y = parse_f64(it.next().unwrap_or("0"), "ooi y");
                 oois.push(Ooi { pos: [x, y] });
             }
+            "duration_s" => {
+                duration_s = parse_f64(it.next().unwrap_or("60.0"), "duration_s");
+            }
+            "trajectory" => {
+                let kind = it.next().unwrap_or("");
+                let traj = match kind {
+                    "straight" => Trajectory::Straight {
+                        psi0: parse_f64(it.next().unwrap_or("0"), "trajectory psi0"),
+                    },
+                    "spiral" => Trajectory::Spiral {
+                        r0: parse_f64(it.next().unwrap_or("0"), "trajectory r0"),
+                        r_growth: parse_f64(it.next().unwrap_or("0"), "trajectory r_growth"),
+                        turns: parse_f64(it.next().unwrap_or("0"), "trajectory turns"),
+                    },
+                    "sine" => Trajectory::Sine {
+                        wavelength_m: parse_f64(it.next().unwrap_or("0"), "trajectory wavelength_m"),
+                        amplitude_m: parse_f64(it.next().unwrap_or("0"), "trajectory amplitude_m"),
+                        direction: parse_f64(it.next().unwrap_or("0"), "trajectory direction"),
+                    },
+                    "zigzag" => Trajectory::Zigzag {
+                        segment_m: parse_f64(it.next().unwrap_or("0"), "trajectory segment_m"),
+                        angle_rad: parse_f64(it.next().unwrap_or("0"), "trajectory angle_rad"),
+                        baseline: parse_f64(it.next().unwrap_or("0"), "trajectory baseline"),
+                    },
+                    other => {
+                        eprintln!("error: unknown trajectory kind: {}", other);
+                        process::exit(1);
+                    }
+                };
+                trajectory = Some(traj);
+            }
             "config" => {
                 let horizon_s = parse_f64(it.next().unwrap_or("0"), "config horizon_s");
                 let n_samples = parse_u32(it.next().unwrap_or("0"), "config n_samples");
@@ -135,6 +169,20 @@ fn parse_scenario(path: &str) -> (Ttc, Vec<Observation>, Vec<Ooi>, PredictConfig
         process::exit(1);
     });
 
+    if let Some(traj) = &trajectory {
+        // Curved path: generate observations directly from the trajectory.
+        // Ignore any 'obs' directives.
+        let obs = generate_curved_track(
+            traj,
+            /* speed */ 5.0,
+            duration_s,
+            /* dt_obs */ 1.0,
+            /* cov */ [1.0, 0.0, 1.0],
+            /* seed */ 42,
+        );
+        return (ttc, obs, oois, config, Some(traj.clone()), duration_s);
+    }
+
     // Stage 1 MC uses the last observation's heading and speed as-is.
     // The scenario provides position + cov per observation but not v/psi,
     // so derive them from the last two observations' positions:
@@ -163,7 +211,7 @@ fn parse_scenario(path: &str) -> (Ttc, Vec<Observation>, Vec<Ooi>, PredictConfig
         };
     }
 
-    (ttc, observations, oois, config)
+    (ttc, observations, oois, config, trajectory, duration_s)
 }
 
 fn main() {
@@ -173,10 +221,32 @@ fn main() {
         process::exit(1);
     }
 
-    let (ttc, observations, oois, config) = parse_scenario(&args[1]);
+    let (ttc, observations, oois, config, trajectory, duration_s) = parse_scenario(&args[1]);
 
     // Stage 1: predict from the last observation.
     let last = &observations[observations.len() - 1];
+
+    // If a trajectory was given, print the observation count + last obs info
+    // alongside the prediction (curved-path scenarios).
+    let mut obs_info = String::new();
+    if let Some(traj) = &trajectory {
+        let n = observations.len();
+        let (x, y, v, psi) = (
+            last.pos[0],
+            last.pos[1],
+            last.v,
+            psi_rem_euclid(last.psi) * 180.0 / PI,
+        );
+        let kind = match traj {
+            Trajectory::Straight { .. } => "straight",
+            Trajectory::Spiral { .. } => "spiral",
+            Trajectory::Sine { .. } => "sine",
+            Trajectory::Zigzag { .. } => "zigzag",
+        };
+        obs_info = format!(
+            "\n# trajectory = {kind}, duration_s = {duration_s:.1}, obs = {n}\n# last obs: x = {x:.3}, y = {y:.3}, v = {v:.3}, psi = {psi:.2} deg",
+        );
+    }
 
     let t_start = std::time::Instant::now();
     let prediction = predict(last, &ttc, &oois, &config);
@@ -197,4 +267,5 @@ fn main() {
     println!("heading_mean_deg = {}", heading_mean_deg);
     println!("n_bins_nonzero = {}", n_bins_nonzero);
     println!("elapsed_ms = {}", elapsed_ms);
+    print!("{}", obs_info);
 }

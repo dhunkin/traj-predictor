@@ -20,6 +20,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::mc::predict;
 use crate::prng::Xoshiro256ss;
+use crate::simulator::{generate_curved_track, Trajectory};
 use crate::types::{Observation, Ooi, PredictConfig, Ttc};
 use crate::vec2::Mat2;
 
@@ -110,6 +111,107 @@ impl Simulator {
             out.push(self.obs_cov[0]);
             out.push(self.obs_cov[1]);
             out.push(self.obs_cov[2]);
+        }
+        out.into_boxed_slice()
+    }
+
+    /// Generate a curved track using the `Spiral` trajectory.
+    ///
+    /// Returns a flat `Box<[f64]>` of `[t, x, y, v, psi, cov_xx, cov_xy, cov_yy]`
+    /// repeated, one 8-field group per observation.
+    pub fn generate_spiral(
+        &self,
+        r0: f64,
+        r_growth: f64,
+        turns: f64,
+        speed: f64,
+        duration: f64,
+    ) -> Box<[f64]> {
+        let traj = Trajectory::Spiral {
+            r0,
+            r_growth,
+            turns,
+        };
+        generate_curved_track(&traj, speed, duration, self.dt_obs_s, self.obs_cov, self.seed)
+            .into_flat()
+    }
+
+    /// Generate a curved track using the `Sine` trajectory.
+    ///
+    /// Returns a flat `Box<[f64]>` of `[t, x, y, v, psi, cov_xx, cov_xy, cov_yy]`
+    /// repeated, one 8-field group per observation.
+    pub fn generate_sine(
+        &self,
+        wavelength: f64,
+        amplitude: f64,
+        direction: f64,
+        speed: f64,
+        duration: f64,
+    ) -> Box<[f64]> {
+        let traj = Trajectory::Sine {
+            wavelength_m: wavelength,
+            amplitude_m: amplitude,
+            direction,
+        };
+        generate_curved_track(&traj, speed, duration, self.dt_obs_s, self.obs_cov, self.seed)
+            .into_flat()
+    }
+
+    /// Generate a curved track using the `Zigzag` trajectory.
+    ///
+    /// Returns a flat `Box<[f64]>` of `[t, x, y, v, psi, cov_xx, cov_xy, cov_yy]`
+    /// repeated, one 8-field group per observation.
+    pub fn generate_zigzag(
+        &self,
+        segment: f64,
+        angle: f64,
+        baseline: f64,
+        speed: f64,
+        duration: f64,
+    ) -> Box<[f64]> {
+        let traj = Trajectory::Zigzag {
+            segment_m: segment,
+            angle_rad: angle,
+            baseline,
+        };
+        generate_curved_track(&traj, speed, duration, self.dt_obs_s, self.obs_cov, self.seed)
+            .into_flat()
+    }
+
+    /// Generate a straight track using the `Straight` trajectory.
+    ///
+    /// Returns a flat `Box<[f64]>` of `[t, x, y, v, psi, cov_xx, cov_xy, cov_yy]`
+    /// repeated, one 8-field group per observation.
+    pub fn generate_straight(
+        &self,
+        psi0: f64,
+        speed: f64,
+        duration: f64,
+    ) -> Box<[f64]> {
+        let traj = Trajectory::Straight { psi0 };
+        generate_curved_track(&traj, speed, duration, self.dt_obs_s, self.obs_cov, self.seed)
+            .into_flat()
+    }
+}
+
+/// Flatten an `Observation` into the 8-field group
+/// `[t, x, y, v, psi, cov_xx, cov_xy, cov_yy]`.
+trait IntoFlat {
+    fn into_flat(self) -> Box<[f64]>;
+}
+
+impl IntoFlat for Vec<Observation> {
+    fn into_flat(self) -> Box<[f64]> {
+        let mut out: Vec<f64> = Vec::with_capacity(self.len() * 8);
+        for o in self {
+            out.push(o.t);
+            out.push(o.pos[0]);
+            out.push(o.pos[1]);
+            out.push(o.v);
+            out.push(o.psi);
+            out.push(o.cov[0]);
+            out.push(o.cov[1]);
+            out.push(o.cov[2]);
         }
         out.into_boxed_slice()
     }
