@@ -8,7 +8,7 @@
 // Anchoring: scenario-local metres are converted to lng/lat relative to an
 // arbitrary anchor point, then map.project() turns lng/lat into screen px.
 
-const API_BASE = 'http://localhost:8080';
+const API_BASE = `${window.location.protocol}//${window.location.hostname}:8081`;
 
 // ---- Anchoring: arbitrary origin of the scenario-local metre grid ----------
 const ANCHOR_LNG = -79.4;

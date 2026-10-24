@@ -12,7 +12,8 @@
 //!   POST /api/predict   -> PredictResponseDto
 //!   POST /api/simulate  -> SimulateResponseDto
 //!
-//! Binds to 127.0.0.1:8080. CORS is added by hand (no tower-http).
+//! Binds to 0.0.0.0:8081 (all interfaces) so the web demo on the LAN can reach
+//! it. CORS is added by hand (no tower-http).
 //!
 //! This binary is only compiled when the `server` feature is enabled
 //! (`required-features = ["server"]` in Cargo.toml), so it may use axum,
@@ -280,10 +281,10 @@ async fn main() {
         .route("/api/simulate", post(simulate_handler).options(preflight))
         .layer(middleware::from_fn(cors));
 
-    // Bind to 127.0.0.1:8080 by default; override with the PORT env var so the
-    // server can be tested on an alternate port (e.g. when 8080 is taken).
-    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
-    let addr = format!("127.0.0.1:{}", port);
+    // Bind to 0.0.0.0:8081 by default (all interfaces) so the web demo on the LAN
+    // can reach it; override with the PORT env var if a different port is needed.
+    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8081);
+    let addr = format!("0.0.0.0:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|e| panic!("bind {} failed: {}", addr, e));
