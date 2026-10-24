@@ -15,9 +15,13 @@ use crate::types::Ttc;
 /// Propagate a kinematic state over one analytic arc.
 ///
 /// Returns `(pos_new, psi_new, v_new, omega_new)`:
-///   - `psi_new = psi + omega * t`
-///   - straight line if `|omega| < 1e-9`, else the analytic constant-turn arc
 ///   - `v_new = clamp(v + gauss(0, speed_noise), v_min, v_max)`
+///   - arc via the chord identity: `half = omega * t / 2`,
+///     `sinc(x) = sin(x)/x` (Taylor `1 - x²/6` near 0),
+///     `chord = v_new * t * sinc(half)`, `mid = psi + half`,
+///     `pos_new = pos + chord * [cos(mid), sin(mid)]` — exact for all `omega`,
+///     including the straight-line limit `omega -> 0`.
+///   - `psi_new = (psi + omega * t).rem_euclid(2*pi)`
 ///   - `omega_new = clamp(omega, -omega_max, omega_max)`
 pub fn propagate(
     pos: [f64; 2],
@@ -29,21 +33,20 @@ pub fn propagate(
     rng: &mut Xoshiro256ss,
     ttc: &Ttc,
 ) -> ([f64; 2], f64, f64, f64) {
-    let omega = omega.clamp(-ttc.omega_max, ttc.omega_max);
-    let v_new = (v + rng.gauss(0.0, speed_noise))
-        .clamp(ttc.v_min, ttc.v_max);
-    let psi_new = psi + omega * t;
-    let pos_new = if omega.abs() < 1e-9 {
-        [
-            pos[0] + v_new * t * psi.cos(),
-            pos[1] + v_new * t * psi.sin(),
-        ]
-    } else {
-        let ratio = v_new / omega;
-        [
-            pos[0] + ratio * (psi_new.sin() - psi.sin()),
-            pos[1] + ratio * (-psi_new.cos() + psi.cos()),
-        ]
-    };
-    (pos_new, psi_new, v_new, omega)
+    let omega_clamped = omega.clamp(-ttc.omega_max, ttc.omega_max);
+    let v_new = (v + rng.gauss(0.0, speed_noise)).clamp(ttc.v_min, ttc.v_max);
+    
+    let half = 0.5 * omega_clamped * t;
+    let sinc = if half.abs() < 1e-4 { 1.0 - half * half / 6.0 } else { half.sin() / half };
+    let chord = v_new * t * sinc;
+    let mid = psi + half;
+    
+    let pos_new = [
+        pos[0] + chord * mid.cos(),
+        pos[1] + chord * mid.sin(),
+    ];
+    
+    let psi_new = (psi + omega_clamped * t).rem_euclid(2.0 * std::f64::consts::PI);
+    
+    (pos_new, psi_new, v_new, omega_clamped)
 }

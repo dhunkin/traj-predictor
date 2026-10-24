@@ -51,10 +51,9 @@ fn omega_max_traces_circle_of_radius_v_over_omega() {
     // Back to the start after a full circle.
     assert!(pos[0].abs() < 1e-6, "x: {}", pos[0]);
     assert!(pos[1].abs() < 1e-6, "y: {}", pos[1]);
-    // Heading advanced by exactly 2*pi.
-    assert!((psi - (std::f64::consts::PI / 2.0 + 2.0 * std::f64::consts::PI))
-        .abs()
-        < 1e-6,
+    // Heading advanced by exactly 2*pi (returned reduced to [0, 2*pi) via
+    // rem_euclid, so PI/2 + 2*pi reduces back to PI/2).
+    assert!((psi - (std::f64::consts::PI / 2.0)).abs() < 1e-6,
         "psi: {}",
         psi
     );

@@ -36,7 +36,7 @@ pub fn predict(
     let cov_factor = Mat2::from_cov(last.cov);
 
     // Accumulate final headings for the histogram and circular mean.
-    let mut bin_counts = vec![0.0; n_bins];
+    let mut bin_counts = vec![0u64; n_bins];
     let mut sum_cos = 0.0;
     let mut sum_sin = 0.0;
     let mut point_cloud = Vec::with_capacity(n_samples);
@@ -74,7 +74,7 @@ pub fn predict(
         // 4. Store final (pos, psi).
         point_cloud.push(pos_new);
         let idx = bin_index(psi_new, n_bins);
-        bin_counts[idx] += 1.0;
+        bin_counts[idx] += 1;
 
         sum_cos += psi_new.cos();
         sum_sin += psi_new.sin();
@@ -83,7 +83,7 @@ pub fn predict(
     // Histogram density (sums to 1).
     let bin_probs: Vec<f64> = bin_counts
         .iter()
-        .map(|&c| c / n_samples as f64)
+        .map(|&c| c as f64 / n_samples as f64)
         .collect();
 
     // Bin centers: center of bin i = (i + 0.5) * bin_width.
@@ -92,8 +92,8 @@ pub fn predict(
         .map(|i| (i as f64 + 0.5) * bin_width)
         .collect();
 
-    let sector50 = sector_width(&bin_counts, n_samples, 0.5, n_bins);
-    let sector90 = sector_width(&bin_counts, n_samples, 0.9, n_bins);
+    let sector50 = sector_width(&bin_counts, n_samples as u64, 0.5, n_bins);
+    let sector90 = sector_width(&bin_counts, n_samples as u64, 0.9, n_bins);
 
     // Circular mean of final headings (robust to 2*pi wrap).
     let final_heading_mean = sum_sin.atan2(sum_cos);

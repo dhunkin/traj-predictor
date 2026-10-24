@@ -26,8 +26,8 @@ fn bin_index_maps_heading_into_range() {
 #[test]
 fn delta_function_sector_is_one_bin() {
     // All samples in bin 0.
-    let counts = [100.0, 0.0, 0.0, 0.0];
-    let n_samples = 100usize;
+    let counts = [100u64, 0, 0, 0];
+    let n_samples = 100u64;
     let n_bins = 4usize;
     let bin_width = 2.0 * PI / n_bins as f64;
 
@@ -42,8 +42,8 @@ fn delta_function_sector_is_one_bin() {
 fn uniform_sector_is_half_and_ninety() {
     // 72 bins, uniform density.
     let n_bins = 72usize;
-    let n_samples = 7200usize;
-    let counts = vec![100.0; n_bins];
+    let n_samples = 7200u64;
+    let counts = vec![100u64; n_bins];
 
     let s50 = sector_width(&counts, n_samples, 0.5, n_bins);
     let s90 = sector_width(&counts, n_samples, 0.9, n_bins);
@@ -68,10 +68,10 @@ fn uniform_sector_is_half_and_ninety() {
 fn symmetric_bimodal_sector() {
     // Two modes at bin 0 and bin 36, each with 50 samples (72 bins).
     let n_bins = 72usize;
-    let n_samples = 100usize;
-    let mut counts = vec![0.0; n_bins];
-    counts[0] = 50.0;
-    counts[36] = 50.0;
+    let n_samples = 100u64;
+    let mut counts = vec![0u64; n_bins];
+    counts[0] = 50;
+    counts[36] = 50;
 
     let s50 = sector_width(&counts, n_samples, 0.5, n_bins);
     let s90 = sector_width(&counts, n_samples, 0.9, n_bins);
@@ -95,8 +95,8 @@ fn symmetric_bimodal_sector() {
 
 #[test]
 fn sector50_leq_sector90() {
-    let counts = vec![10.0, 20.0, 30.0, 40.0];
-    let n_samples = 100usize;
+    let counts = vec![10u64, 20, 30, 40];
+    let n_samples = 100u64;
     let n_bins = 4usize;
     let s50 = sector_width(&counts, n_samples, 0.5, n_bins);
     let s90 = sector_width(&counts, n_samples, 0.9, n_bins);
