@@ -60,10 +60,10 @@ fn process_noise(dt: f64, q_sigma: f64) -> [[f64; 4]; 4] {
     ]
 }
 
-/// 2x2 matrix inverse with a small diagonal regularizer so a (near-)singular
+/// 2x2 matrix inverse with a scaled diagonal regularizer so a (near-)singular
 /// `S` still yields a finite gain.
 fn inverse22(a: [[f64; 2]; 2]) -> [[f64; 2]; 2] {
-    let eps = 1e-9;
+    let eps = 1e-12 * a[0][0].abs().max(a[1][1].abs()).max(1e-12);
     let a00 = a[0][0] + eps;
     let a11 = a[1][1] + eps;
     let det = a00 * a11 - a[0][1] * a[1][0];
@@ -230,8 +230,8 @@ pub struct KalmanFilter {
 impl KalmanFilter {
     /// Initialize the filter with the first observation: seed the state at the
     /// measured position (velocity unknown), build `P` from the observation
-    /// covariance for the position block and a large variance for velocity,
-    /// then incorporate the first measurement.
+    /// covariance for the position block and a large variance for velocity.
+    /// The initialization already represents the posterior (no extra update).
     pub fn new(initial_obs: &Observation) -> Self {
         let cov = initial_obs.cov;
         let mut kf = KalmanFilter {
@@ -247,8 +247,6 @@ impl KalmanFilter {
         // Unknown velocity -> large variance.
         kf.p[2][2] = INIT_V_VAR;
         kf.p[3][3] = INIT_V_VAR;
-        // Incorporate the first measurement.
-        kf.update(initial_obs);
         kf
     }
 
@@ -291,10 +289,31 @@ impl KalmanFilter {
         for i in 0..4 {
             self.x[i] += k[i][0] * y[0] + k[i][1] * y[1];
         }
-        // P' = (I - K H) P.
+        // P' = (I - K H) P (I - K H)^T + K R K^T
         let kh = mul_4x2_by_2x4(k, h);
         let ikh = sub_from_identity(kh);
-        self.p = mul_4x4(ikh, self.p);
+        let ikh_t = transpose44(ikh);
+
+        // (I - KH) P (I - KH)^T
+        let mut p = mul_4x4(mul_4x4(ikh, self.p), ikh_t);
+
+        // + K R K^T
+        let kr = mul_4x2_by_2x2(k, r);
+        for i in 0..4 {
+            for j in 0..4 {
+                p[i][j] += kr[i][0] * k[j][0] + kr[i][1] * k[j][1];
+            }
+        }
+
+        // Enforce symmetry
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                let m = 0.5 * (p[i][j] + p[j][i]);
+                p[i][j] = m;
+                p[j][i] = m;
+            }
+        }
+        self.p = p;
         self.last_t = obs.t;
     }
 
@@ -328,6 +347,9 @@ pub fn filter_track(track: &[Observation]) -> Observation {
         !track.is_empty(),
         "filter_track needs at least one observation"
     );
+    for i in 1..track.len() {
+        assert!(track[i].t > track[i-1].t, "Track timestamps must be strictly increasing");
+    }
     let mut kf = KalmanFilter::new(&track[0]);
     for obs in &track[1..] {
         let dt = obs.t - kf.last_t;
