@@ -9,11 +9,28 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 wasm = ["dep:wasm-bindgen", "dep:js-sys"]
+# The HTTP server binary (src/bin/server.rs) pulls in axum/tokio/serde/
+# serde_json. These are optional and gated behind the "server" feature so the
+# core lib + wasm build stay dependency-free.
+server = ["dep:axum", "dep:tokio", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 wasm-bindgen = { version = "0.2", optional = true }
 js-sys = { version = "0.3", optional = true }
 
+# HTTP server binary (src/bin/server.rs). The core lib (src/lib.rs) stays
+# dependency-free: it does not import any of these — they are used only by
+# the server binary (which is only built when the "server" feature is on).
+axum = { version = "0.7", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
 [profile.release]
 opt-level = "s"
 lto = true
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
+required-features = ["server"]

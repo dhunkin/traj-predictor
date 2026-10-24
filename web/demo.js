@@ -1,13 +1,14 @@
-// web/demo.js — Stage 1 WASM heading-prediction demo.
+// web/demo.js — Stage 1 client/server heading-prediction demo.
 //
-// Maps the predictor core (src/wasm.rs) onto a MapLibre GL JS map with a
+// Maps the predictor core (Rust backend) onto a MapLibre GL JS map with a
 // canvas overlay ("fan") that draws the track, point cloud, histogram fan,
-// and 50%/90% sector contours.
+// and 50%/90% sector contours. The prediction and simulation logic now runs
+// in the Rust server over HTTP/JSON; the browser talks to it via fetch.
 //
 // Anchoring: scenario-local metres are converted to lng/lat relative to an
 // arbitrary anchor point, then map.project() turns lng/lat into screen px.
 
-import init, { Simulator, Predictor } from './pkg/predictor.js';
+const API_BASE = 'http://localhost:8080';
 
 // ---- Anchoring: arbitrary origin of the scenario-local metre grid ----------
 const ANCHOR_LNG = -79.4;
@@ -76,16 +77,25 @@ function status(msg) { el('status').textContent = msg; }
 
 // ---- State -----------------------------------------------------------------
 let observations = []; // {t, x, y, cov_xx, cov_xy, cov_yy, v, psi}
-let sim = null;
 let pred = null;
 // Last observation, hoisted to module scope so predict() can use it
 // regardless of handler scope (fixes "last is not defined" on Predict).
 let lastObservation = null;
 
-const W = async (fn) => {
-  try { return await fn(); }
-  catch (e) { status('error: ' + (e && e.message ? e.message : e)); throw e; }
-};
+// ---- HTTP helpers ----------------------------------------------------------
+async function apiPost(path, payload) {
+  const res = await fetch(API_BASE + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    let detail = '';
+    try { detail = await res.text(); } catch (_) { /* ignore */ }
+    throw new Error('HTTP ' + res.status + (detail ? ': ' + detail : ''));
+  }
+  return res.json();
+}
 
 // ---- Rendering -------------------------------------------------------------
 function draw() {
@@ -255,64 +265,51 @@ async function simulate() {
     const seed = BigInt(val('seed') | 0);
     const speed = val('v_max');
     const duration = val('duration_s');
-    const vMin = val('v_min');
-    const vMax = val('v_max');
-    const omegaMax = val('omega_max');
     const dt = 1.0;
-    const cov = [1.0, 0.0, 1.0]; // obs_cov
+    const cov_xx = 1.0;
+    const cov_xy = 0.0;
+    const cov_yy = 1.0;
     const trajType = el('traj-type').value;
 
     // Read trajectory parameters by id from the UI (only the ones for the
     // selected type exist; read all but tolerate missing inputs).
     const gp = (id) => { const n = el(id); return n ? parseFloat(n.value) : 0; };
-    const p = {
-      psi0: gp('traj-psi0'),
-      r0: gp('traj-r0'),
-      rGrowth: gp('traj-r-growth'),
-      turns: gp('traj-turns'),
-      wavelength: gp('traj-wavelength'),
-      amplitude: gp('traj-amplitude'),
-      direction: gp('traj-direction'),
-      segment: gp('traj-segment'),
-      angle: gp('traj-angle'),
-      baseline: gp('traj-baseline'),
-    };
-
-    // Build the argument list and call the matching wasm method.
-    const sim = new Simulator(seed, vMin, vMax, omegaMax, dt, cov[0], cov[1], cov[2]);
-    let flat;
+    // Send only the params relevant to the selected trajectory type.
+    // (The backend reads params[0..3] per type; a flat 10-element array
+    // would misalign sine/zigzag params.)
+    let params;
     switch (trajType) {
       case 'straight':
-        flat = sim.generate_straight(p.psi0, speed, duration);
+        params = [gp('traj-psi0')];
         break;
       case 'spiral':
-        flat = sim.generate_spiral(p.r0, p.rGrowth, p.turns, speed, duration);
+        params = [gp('traj-r0'), gp('traj-r-growth'), gp('traj-turns')];
         break;
       case 'sine':
-        flat = sim.generate_sine(p.wavelength, p.amplitude, p.direction, speed, duration);
+        params = [gp('traj-wavelength'), gp('traj-amplitude'), gp('traj-direction')];
         break;
       case 'zigzag':
-        flat = sim.generate_zigzag(p.segment, p.angle, p.baseline, speed, duration);
+        params = [gp('traj-segment'), gp('traj-angle'), gp('traj-baseline')];
         break;
       default:
-        throw new Error('unknown trajectory: ' + trajType);
+        params = [0];
     }
-    sim.free();
 
-    // Parse the 8-field flat output.
-    observations = [];
-    for (let i = 0; i + 7 < flat.length; i += 8) {
-      observations.push({
-        t:     flat[i],
-        x:     flat[i + 1],
-        y:     flat[i + 2],
-        v:     flat[i + 3],
-        psi:   flat[i + 4],
-        cov_xx:flat[i + 5],
-        cov_xy:flat[i + 6],
-        cov_yy:flat[i + 7],
-      });
-    }
+    // POST to the server and parse the returned observations.
+    const res = await apiPost('/api/simulate', {
+      trajectory_type: trajType,
+      params,
+      speed,
+      duration_s: duration,
+      dt_obs_s: dt,
+      cov_xx, cov_xy, cov_yy,
+      seed: Number(seed),
+    });
+
+    observations = res.observations.map((o) => ({
+      t: o.t, x: o.x, y: o.y, v: o.v, psi: o.psi,
+      cov_xx: o.cov_xx, cov_xy: o.cov_xy, cov_yy: o.cov_yy,
+    }));
     lastObservation = observations[observations.length - 1];
     pred = null;
     draw();
@@ -348,27 +345,43 @@ async function predict() {
     const azimuthBins = Math.round(val('azimuth_bins'));
     const t0 = performance.now();
 
-    // FIX 3: free the Predictor instance (pred is reassigned to a plain
-    // object, so the wasm object would otherwise leak).
-    const predictor = new Predictor(val('v_min'), val('v_max'), val('omega_max'));
-    const res = predictor.predict(
-      last.t, last.x, last.y,
-      last.cov_xx, last.cov_xy, last.cov_yy,
-      last.psi, last.v,
-      val('horizon_s'), val('n_samples'), val('p_turn'),
-      azimuthBins, val('speed_noise_mps'), BigInt(val('seed') | 0));
+    // POST to the server and parse the prediction result.
+    const res = await apiPost('/api/predict', {
+      ttc: {
+        v_min: val('v_min'),
+        v_max: val('v_max'),
+        omega_max: val('omega_max'),
+      },
+      last_observation: {
+        t: last.t,
+        x: last.x,
+        y: last.y,
+        v: last.v,
+        psi: last.psi,
+        cov_xx: last.cov_xx,
+        cov_xy: last.cov_xy,
+        cov_yy: last.cov_yy,
+      },
+      oois: [],
+      config: {
+        horizon_s: val('horizon_s'),
+        n_samples: val('n_samples'),
+        dt_s: 1.0,
+        p_turn: val('p_turn'),
+        azimuth_bins: azimuthBins,
+        speed_noise_mps: val('speed_noise_mps'),
+        seed: Number(val('seed') | 0),
+      },
+    });
 
-    // Copy typed arrays out before freeing.
     pred = {
-      bin_centers: copy(res.bin_centers()),
-      bin_probs: copy(res.bin_probs()),
-      point_cloud: copy(res.point_cloud()),
-      final_heading_mean: res.final_heading_mean(),
-      sector50: res.sector50(),
-      sector90: res.sector90(),
+      bin_centers: res.bin_centers,
+      bin_probs: res.bin_probs,
+      point_cloud: res.point_cloud,
+      final_heading_mean: res.heading_mean,
+      sector50: res.sector50,
+      sector90: res.sector90,
     };
-    res.free();
-    predictor.free();
 
     // Stats (radians -> degrees).
     el('s50').textContent = (pred.sector50 * 180 / Math.PI).toFixed(1);
@@ -382,12 +395,6 @@ async function predict() {
     draw();
     status('prediction complete');
   });
-}
-
-function copy(arr) {
-  const out = new Float64Array(arr.length);
-  out.set(arr);
-  return out;
 }
 
 // ---- Wire up ---------------------------------------------------------------
@@ -409,8 +416,11 @@ function wireButtons() {
 }
 map.on('load', wireButtons);
 // Fallback: if the 'load' event doesn't fire (e.g., tiles not loading in a
-// headless browser), wire up the buttons after init() completes.
+// headless browser), wire up the buttons after a short delay.
 setTimeout(wireButtons, 2000);
 
-// Ensure the WASM module is instantiated before use.
-await init();
+// Global error wrapper for the async action handlers.
+async function W(fn) {
+  try { return await fn(); }
+  catch (e) { status('error: ' + (e && e.message ? e.message : e)); throw e; }
+}
