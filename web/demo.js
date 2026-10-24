@@ -65,8 +65,8 @@ function resizeCanvas() {
 const el = (id) => document.getElementById(id);
 const inputs = {
   seed: 'seed', v_min: 'v_min', v_max: 'v_max', omega_max: 'omega_max',
-  horizon_s: 'horizon_s', n_samples: 'n_samples', p_turn: 'p_turn',
-  speed_noise_mps: 'speed_noise_mps', azimuth_bins: 'azimuth_bins',
+  horizon_s: 'horizon_s', duration_s: 'duration_s', n_samples: 'n_samples',
+  p_turn: 'p_turn', speed_noise_mps: 'speed_noise_mps', azimuth_bins: 'azimuth_bins',
 };
 function val(id) { return parseFloat(el(inputs[id]).value); }
 function status(msg) { el('status').textContent = msg; }
@@ -195,29 +195,114 @@ function drawSectorContour(ax, ay, mean, width, color, last) {
   ctx.stroke();
 }
 
+// ---- Trajectory parameter UI -----------------------------------------------
+// Build number inputs for the selected trajectory's parameters.
+const TRAJ_DEFS = {
+  straight: { fields: [
+    { id: 'traj-psi0', label: 'psi0', value: 0 },
+  ]},
+  spiral: { fields: [
+    { id: 'traj-r0', label: 'r0', value: 10 },
+    { id: 'traj-r-growth', label: 'r_growth', value: 1 },
+    { id: 'traj-turns', label: 'turns', value: 3 },
+  ]},
+  sine: { fields: [
+    { id: 'traj-wavelength', label: 'wavelength', value: 100 },
+    { id: 'traj-amplitude', label: 'amplitude', value: 20 },
+    { id: 'traj-direction', label: 'direction', value: 0 },
+  ]},
+  zigzag: { fields: [
+    { id: 'traj-segment', label: 'segment', value: 30 },
+    { id: 'traj-angle', label: 'angle', value: 0.5 },
+    { id: 'traj-baseline', label: 'baseline', value: 0 },
+  ]},
+};
+
+function populateTrajParams() {
+  const type = el('traj-type').value;
+  const def = TRAJ_DEFS[type];
+  const container = el('traj-params');
+  container.innerHTML = '';
+  if (!def) return;
+  for (const f of def.fields) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const label = document.createElement('label');
+    label.setAttribute('for', f.id);
+    label.textContent = f.label;
+    const input = document.createElement('input');
+    input.id = f.id;
+    input.type = 'number';
+    input.value = f.value;
+    input.step = 'any';
+    row.appendChild(label);
+    row.appendChild(input);
+    container.appendChild(row);
+  }
+}
+
 // ---- Actions ---------------------------------------------------------------
 async function simulate() {
   await W(async () => {
     const seed = BigInt(val('seed') | 0);
-    const headingRad = 0.6; // ~34 deg, a representative initial heading
     const speed = val('v_max');
-    const duration = val('horizon_s');
+    const duration = val('duration_s');
     const vMin = val('v_min');
     const vMax = val('v_max');
     const omegaMax = val('omega_max');
     const dt = 1.0;
     const cov = [1.0, 0.0, 1.0]; // obs_cov
+    const trajType = el('traj-type').value;
 
-    sim = new Simulator(seed, vMin, vMax, omegaMax, dt, cov[0], cov[1], cov[2]);
-    const flat = sim.generate_track_from(0, 0, headingRad, speed, duration);
+    // Read trajectory parameters by id from the UI (only the ones for the
+    // selected type exist; read all but tolerate missing inputs).
+    const gp = (id) => { const n = el(id); return n ? parseFloat(n.value) : 0; };
+    const p = {
+      psi0: gp('traj-psi0'),
+      r0: gp('traj-r0'),
+      rGrowth: gp('traj-r-growth'),
+      turns: gp('traj-turns'),
+      wavelength: gp('traj-wavelength'),
+      amplitude: gp('traj-amplitude'),
+      direction: gp('traj-direction'),
+      segment: gp('traj-segment'),
+      angle: gp('traj-angle'),
+      baseline: gp('traj-baseline'),
+    };
+
+    // Build the argument list and call the matching wasm method.
+    const sim = new Simulator(seed, vMin, vMax, omegaMax, dt, cov[0], cov[1], cov[2]);
+    let flat;
+    switch (trajType) {
+      case 'straight':
+        flat = sim.generate_straight(p.psi0, speed, duration);
+        break;
+      case 'spiral':
+        flat = sim.generate_spiral(p.r0, p.rGrowth, p.turns, speed, duration);
+        break;
+      case 'sine':
+        flat = sim.generate_sine(p.wavelength, p.amplitude, p.direction, speed, duration);
+        break;
+      case 'zigzag':
+        flat = sim.generate_zigzag(p.segment, p.angle, p.baseline, speed, duration);
+        break;
+      default:
+        throw new Error('unknown trajectory: ' + trajType);
+    }
     sim.free();
 
+    // Parse the 8-field flat output.
     observations = [];
-    for (let i = 0; i + 5 < flat.length; i += 6) {
+    for (let i = 0; i + 7 < flat.length; i += 8) {
       observations.push({
-        t: flat[i], x: flat[i + 1], y: flat[i + 2],
-        cov_xx: flat[i + 3], cov_xy: flat[i + 4], cov_yy: flat[i + 5],
-        v: speed, psi: headingRad,
+        t:     flat[i],
+        x:     flat[i + 1],
+        y:     flat[i + 2],
+        v:     flat[i + 3],
+        psi:   flat[i + 4],
+        cov_xx:flat[i + 5],
+        cov_xy:flat[i + 6],
+        cov_yy:flat[i + 7],
       });
     }
     lastObservation = observations[observations.length - 1];
@@ -227,7 +312,7 @@ async function simulate() {
 
     // Center the scenario start in the left half of the viewport so the
     // prediction fan opens into empty space on the right (BUG 2).
-    if (map.isLoaded()) {
+    if (map.isStyleLoaded()) {
       const [lng, lat] = metersToLngLat(lastObservation.x, lastObservation.y);
       map.easeTo({ center: [lng, lat], zoom: 16, duration: 800 });
     }
@@ -293,6 +378,9 @@ function wireButtons() {
   window.addEventListener('resize', () => { resizeCanvas(); draw(); });
   el('btn_sim').addEventListener('click', simulate);
   el('btn_predict').addEventListener('click', predict);
+  // Populate trajectory parameter inputs on load and when the selector changes.
+  populateTrajParams();
+  el('traj-type').addEventListener('change', populateTrajParams);
   status('Ready.');
 }
 map.on('load', wireButtons);

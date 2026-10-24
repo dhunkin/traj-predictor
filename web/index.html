@@ -80,6 +80,7 @@
     <div class="row"><label for="v_max">v_max</label><input id="v_max" type="number" value="12" step="0.5" /></div>
     <div class="row"><label for="omega_max">omega_max</label><input id="omega_max" type="number" value="0.5" step="0.05" /></div>
     <div class="row"><label for="horizon_s">horizon_s</label><input id="horizon_s" type="number" value="10" step="0.5" /></div>
+    <div class="row"><label for="duration_s">duration_s</label><input id="duration_s" type="number" value="30" step="5" min="1" /></div>
     <div class="row"><label for="n_samples">n_samples</label><input id="n_samples" type="number" value="2000" step="500" /></div>
     <div class="row"><label for="p_turn">p_turn</label><input id="p_turn" type="number" value="0.3" step="0.05" min="0" max="1" /></div>
     <div class="row"><label for="speed_noise_mps">speed_noise_mps</label><input id="speed_noise_mps" type="number" value="0.5" step="0.1" /></div>
@@ -89,6 +90,18 @@
       <label><input id="show_track" type="checkbox" checked /> show track</label>
       <label><input id="show_cloud" type="checkbox" checked /> show point cloud</label>
     </div>
+
+    <div class="row">
+      <label for="traj-type">trajectory</label>
+      <select id="traj-type">
+        <option value="straight">straight</option>
+        <option value="spiral">spiral</option>
+        <option value="sine">sine</option>
+        <option value="zigzag">zigzag</option>
+      </select>
+    </div>
+
+    <div id="traj-params"></div>
 
     <div class="btns">
       <button id="btn_sim">Simulate track</button>
