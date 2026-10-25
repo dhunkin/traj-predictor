@@ -1,5 +1,11 @@
 //! particle.rs — unified Particle Filter for track estimation.
 //!
+//! This module is the main entry point for heading prediction: the public
+//! `predict()` function here delegates the whole pipeline (filter the track,
+//! then fan forward to the azimuth histogram). It was previously split across
+//! the now-removed `mc` and `filter` modules, which have been consolidated
+//! into this single particle-engine entry point.
+//!
 //! Carries a set of weighted hypotheses (particles) over the UAV's full
 //! kinematic state `(x, y, v, psi, omega)` and learns the state from the
 //! entire observation track, rather than from just the last observation as
@@ -25,7 +31,7 @@
 use crate::histogram::{bin_index, sector_width};
 use crate::motion::propagate_step;
 use crate::prng::Xoshiro256ss;
-use crate::types::{Observation, PredictConfig, Prediction, Ttc};
+use crate::types::{Observation, Ooi, PredictConfig, Prediction, Ttc};
 use crate::vec2::Mat2;
 use std::f64::consts::PI;
 
@@ -89,11 +95,15 @@ pub fn resample(particles: &mut Vec<Particle>, rng: &mut Xoshiro256ss) {
 /// observations; the first observation seeds the position prior and each
 /// subsequent observation drives a filter (propagate -> reweight -> resample)
 /// step before the final prediction fan.
-pub fn run_particle_filter(
+///
+/// This is the public entry point for heading prediction.
+pub fn predict(
     track: &[Observation],
     ttc: &Ttc,
+    oois: &[Ooi],
     cfg: &PredictConfig,
 ) -> Prediction {
+    let _ = oois; // Stage 2: OOIs are an extension point, not yet used for inference.
     let n_samples = cfg.n_samples as usize;
     let n_bins = cfg.azimuth_bins as usize;
 

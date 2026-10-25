@@ -12,6 +12,7 @@ pub struct Ttc {
     pub omega_cap: f64,  // absolute max turn rate (rad/s), e.g., 1.0
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct Observation {
     pub t: f64,           // seconds from scenario start
     pub pos: [f64; 2],

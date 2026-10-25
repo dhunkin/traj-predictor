@@ -12,7 +12,7 @@
 //! turn-rate uncertainty (`p_turn`), not by position (`cov`) noise.
 
 use predictor::histogram::psi_rem_euclid;
-use predictor::mc::predict;
+use predictor::particle::predict;
 use predictor::prng::Xoshiro256ss;
 use predictor::simulator::generate_track;
 use predictor::types::{KinState, Observation, PredictConfig, Ttc};
@@ -442,10 +442,21 @@ fn simulator_then_predict() {
         psi: 0.0,
     };
     let t = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 1.0);
-    let track = generate_track(&[start], &t, 1.0, [1.0, 0.0, 1.0], 42);
-    assert_eq!(track.len(), 1, "one waypoint -> one observation");
+    // Two waypoints so the track has >= 2 observations (the particle filter
+    // requires at least 2; see `run_particle_filter`'s assertion).
+    let track = generate_track(
+        &[
+            KinState { pos: [0.0, 0.0], v: 5.0, psi: 0.0 },
+            KinState { pos: [10.0, 0.0], v: 5.0, psi: 0.0 },
+        ],
+        &t,
+        1.0,
+        [1.0, 0.0, 1.0],
+        42,
+    );
+    assert_eq!(track.len(), 2, "two waypoints -> two observations");
 
-    let last = &track[0];
+    let last = &track[1];
     // First observation carries v = start.v, psi = start.psi
     // (simulator copies the initial KinState into every
     // observation for Stage 1).
@@ -461,7 +472,7 @@ fn simulator_then_predict() {
     );
 
     let c = cfg(10.0, 10000, 0.3, 72, 42, 0.5);
-    let prediction = predict(&[*last], &t, &[], &c);
+    let prediction = predict(&track, &t, &[], &c);
     let sum: f64 = prediction.bin_probs.iter().sum();
     assert!((sum - 1.0).abs() < 1e-6, "bin_probs sum = {}, expected ~1", sum);
     assert_eq!(

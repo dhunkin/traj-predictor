@@ -18,7 +18,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::mc::predict;
+use crate::particle::predict;
 use crate::prng::Xoshiro256ss;
 use crate::simulator::{generate_curved_track, Trajectory};
 use crate::types::{Observation, Ooi, PredictConfig, Ttc};
@@ -270,13 +270,14 @@ impl Predictor {
         speed_noise_mps: f64,
         seed: u64,
     ) -> PredictionResult {
-        let last = Observation {
+        let last_obs = Observation {
             t: last_t,
             pos: [last_x, last_y],
             v: speed,
             psi: heading_rad,
             cov: [cov_xx, cov_xy, cov_yy],
         };
+        let track = vec![last_obs];
         let oois: Vec<Ooi> = Vec::new(); // Stage 1: OOIs are an extension point.
         let cfg = PredictConfig {
             horizon_s,
@@ -288,7 +289,7 @@ impl Predictor {
             seed,
         };
 
-        let prediction = predict(&last, &self.ttc, &oois, &cfg);
+        let prediction = predict(&track, &self.ttc, &oois, &cfg);
         PredictionResult::from_prediction(prediction)
     }
 }

@@ -5,7 +5,7 @@
 //! to the server via `fetch`. The core library (`predictor`) stays
 //! dependency-free: this binary is the only thing that pulls in axum,
 //! tokio, serde and serde_json, and it converts its JSON DTOs to/from the
-//! core types before calling `mc::predict` and `simulator::generate_curved_track`.
+//! core types before calling `particle::predict` and `simulator::generate_curved_track`.
 //!
 //! Endpoints:
 //!   GET  /health     -> "ok"
@@ -30,7 +30,7 @@ use axum::Router;
 
 use serde::{Deserialize, Serialize};
 
-use predictor::mc::predict;
+use predictor::particle::predict;
 use predictor::simulator::{generate_curved_track, Trajectory};
 use predictor::types::{Observation, Ooi, PredictConfig, Ttc};
 

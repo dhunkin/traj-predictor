@@ -12,7 +12,7 @@
 //!
 //! Manual parsing with std::env::args + split_whitespace. No new deps.
 
-use predictor::mc::predict;
+use predictor::particle::predict;
 use predictor::simulator::{generate_curved_track, Trajectory};
 use predictor::types::{Observation, Ooi, PredictConfig, Ttc};
 use std::env;
@@ -253,7 +253,8 @@ fn main() {
     }
 
     let t_start = std::time::Instant::now();
-    let prediction = predict(last, &ttc, &oois, &config);
+    eprintln!("CLI_DEBUG track_len={} o0={:?} oN={:?}", observations.len(), observations[0], observations[observations.len()-1]);
+    let prediction = predict(&observations, &ttc, &oois, &config);
     let elapsed_ms = t_start.elapsed().as_millis();
 
     let sector50_deg = prediction.sector50 * 180.0 / PI;
