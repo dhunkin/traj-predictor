@@ -8,13 +8,14 @@
 //! Pipeline:
 //!   1. INITIALISE N particles from the first observation's position
 //!      covariance, a uniform velocity in `[v_min, v_max]`, and a uniform
-//!      heading in `[0, 2*pi)`.
+//!      heading in `[0, 2*pi)` (stored as log-weights).
 //!   2. FILTER over `track[1..]`: propagate each particle with the
 //!      Ornstein-Uhlenbeck turn-rate model (`motion::propagate_step`),
-//!      reweight by distance to the new observation, normalise, and
-//!      systematic-resample when the effective sample size drops.
-//!   3. PREDICT by fanning every particle forward to `horizon_s` and
-//!      histogramming the final heading into the azimuth bins.
+//!      reweight by the 2D Mahalanobis likelihood of the new observation,
+//!      normalise in the log domain, and systematic-resample when the
+//!      effective sample size drops.
+//!   3. PREDICT by resampling once, then fanning every particle forward to
+//!      `horizon_s` and histogramming the final heading into the azimuth bins.
 //!
 //! Dependency-free: all math is manual, using `crate::motion`,
 //! `crate::histogram`, `crate::vec2`, `crate::prng`, `crate::types`.
@@ -96,12 +97,15 @@ pub fn run_particle_filter(
     let n_samples = cfg.n_samples as usize;
     let n_bins = cfg.azimuth_bins as usize;
 
+    assert!(track.len() >= 2, "Needs at least 2 observations");
+    assert!(n_samples >= 2, "Needs at least 2 particles");
+
     let mut rng = Xoshiro256ss::from_seed(cfg.seed);
-    eprintln!("PF_DEBUG seed={} track_len={}", cfg.seed, track.len());
 
     // ---- 1. INITIALIZATION -------------------------------------------------
     // Sample initial position from track[0]'s covariance; velocity uniform in
-    // [v_min, v_max]; heading uniform in [0, 2*pi); turn rate zero.
+    // [v_min, v_max]; heading uniform in [0, 2*pi); turn rate zero. Weights are
+    // stored in the log domain.
     let mut particles: Vec<Particle> = Vec::with_capacity(n_samples);
     let cov_factor = Mat2::from_cov(track[0].cov);
     for _ in 0..n_samples {
@@ -118,17 +122,15 @@ pub fn run_particle_filter(
             v,
             psi,
             omega: 0.0,
-            weight: 1.0 / n_samples as f64,
+            weight: (1.0 / n_samples as f64).ln(),
         });
     }
 
-    eprintln!("PF_DEBUG init p0={:?} p1={:?}", particles[0], particles[1]);
     // ---- 2. FILTERING LOOP (track[1..]) ------------------------------------
-    eprintln!("PF_DEBUG filter_steps={}", track.len() - 1);
     for i in 1..track.len() {
         let obs = &track[i];
         let dt = obs.t - track[i - 1].t;
-        eprintln!("PF_DEBUG step i={} dt={}", i, dt);
+        if dt <= 0.0 { continue; }
 
         // Propagate + reweight each particle against the new observation.
         for p in particles.iter_mut() {
@@ -149,23 +151,33 @@ pub fn run_particle_filter(
             p.v = v_new;
             p.omega = omega_new;
 
-            // Reweight by the (1-D) Gaussian likelihood of the position, using
-            // obs.cov[0] as the variance (clamped to 1e-10 if zero).
-            let d2 = (p.x - obs.pos[0]).powi(2) + (p.y - obs.pos[1]).powi(2);
-            let var = obs.cov[0].max(1e-10);
-            p.weight *= (-0.5 * d2 / var).exp();
+            // 2D Mahalanobis likelihood (with noise floor), applied in the log
+            // domain so weights accumulate without underflowing to 0.
+            let floor = 0.5; // Measurement noise floor to prevent underflow
+            let a = obs.cov[0] + floor;
+            let b = obs.cov[1];
+            let c = obs.cov[2] + floor;
+            let det = a * c - b * b;
+            let dx = p.x - obs.pos[0];
+            let dy = p.y - obs.pos[1];
+            let d2 = (c * dx * dx - 2.0 * b * dx * dy + a * dy * dy) / det.max(1e-9);
+            let log_likelihood = -0.5 * d2;
+            p.weight = p.weight.ln() + log_likelihood;
         }
 
-        // Normalise weights; rescue to uniform if the total collapsed to 0.
-        let sum: f64 = particles.iter().map(|p| p.weight).sum();
-        if sum == 0.0 {
-            for p in particles.iter_mut() {
-                p.weight = 1.0 / n_samples as f64;
-            }
+        // Log-domain normalisation (log-sum-exp); rescue to uniform if the
+        // track is lost (weights collapse to -inf).
+        let max_lw = particles.iter().map(|p| p.weight).fold(f64::NEG_INFINITY, f64::max);
+        if !max_lw.is_finite() {
+            // Track lost, rescue
+            for p in particles.iter_mut() { p.weight = 1.0 / n_samples as f64; }
         } else {
+            let mut sum = 0.0;
             for p in particles.iter_mut() {
-                p.weight /= sum;
+                p.weight = (p.weight - max_lw).exp();
+                sum += p.weight;
             }
+            for p in particles.iter_mut() { p.weight /= sum; }
         }
 
         // Effective sample size; resample when it drops below N/2.
@@ -176,11 +188,12 @@ pub fn run_particle_filter(
         }
     }
 
-    eprintln!("PF_DEBUG after_filter p0={:?} p1={:?}", particles[0], particles[1]);
     // ---- 3. PREDICTION LOOP (fan generation) -------------------------------
-    // Fan each particle forward to the horizon with the OU turn-rate model,
-    // histogramming the final heading. State is copied to locals so the
+    // Resample once so every particle has equal weight 1/N before prediction,
+    // then fan each particle forward to the horizon with the OU turn-rate
+    // model, histogramming the final heading. State is copied to locals so the
     // stored particle is not mutated.
+    resample(&mut particles, &mut rng);
     let mut counts = vec![0u64; n_bins];
     let mut point_cloud = Vec::with_capacity(n_samples);
     let bin_width = 2.0 * PI / n_bins as f64;
@@ -194,8 +207,10 @@ pub fn run_particle_filter(
         let mut omega = p.omega;
 
         let mut time = 0.0;
-        let dt_step = 0.5;
-        while time < cfg.horizon_s {
+        let n_steps = (cfg.horizon_s / 0.5).ceil() as usize;
+        for _ in 0..n_steps {
+            let dt_step = (cfg.horizon_s - time).min(0.5);
+            if dt_step <= 0.0 { break; }
             let (pos_new, psi_new, v_new, omega_new) = propagate_step(
                 pos,
                 v,
@@ -221,7 +236,6 @@ pub fn run_particle_filter(
         sum_cos += psi.cos();
     }
 
-    eprintln!("PF_DEBUG n_samples={} n_bins={} counts_sum={} nz={}", n_samples, n_bins, counts.iter().map(|&c| c as u64).sum::<u64>(), {let mut z=0; for c in counts.iter(){if *c>0 {z+=1;}}; z});
     // ---- 4. RETURN ---------------------------------------------------------
     let bin_probs: Vec<f64> =
         counts.iter().map(|&c| c as f64 / n_samples as f64).collect();

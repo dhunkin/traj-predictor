@@ -55,10 +55,10 @@ pub fn propagate(
 /// (Ornstein-Uhlenbeck) model with speed-dependent lateral-acceleration limits.
 ///
 /// Returns `(pos_new, psi_new, v_new, omega_new)`:
-///   1. `omega` is updated via an OU process (mean-reversion time `tau = 2.0s`),
-///      then clamped to a speed-dependent limit `min(a_lat / v, omega_cap)`.
-///   2. `v` is perturbed by longitudinal Gaussian noise and clamped to
-///      `[v_min, v_max]`.
+///   1. `v` is perturbed by longitudinal Gaussian noise (scaled by `sqrt(dt)`)
+///      and clamped to `[v_min, v_max]`.
+///   2. `omega` is updated via an OU process (mean-reversion time `tau = 2.0s`),
+///      then clamped to a speed-dependent limit `min(a_lat / v_new, omega_cap)`.
 ///   3. `psi` and `pos` are updated via the chord/sinc identity.
 ///
 /// `turn_noise_sigma` is the OU stationary std-dev of `omega`; `speed_noise`
@@ -74,20 +74,20 @@ pub fn propagate_step(
     rng: &mut Xoshiro256ss,
     ttc: &Ttc,
 ) -> ([f64; 2], f64, f64, f64) {
-    // 1. Update omega using Ornstein-Uhlenbeck process (tau = 2.0s)
+    // 1. Update speed (longitudinal)
+    let v_noise = rng.gauss(0.0, speed_noise) * dt.sqrt();
+    let v_new = (v + v_noise).clamp(ttc.v_min, ttc.v_max);
+
+    // 2. Update omega using Ornstein-Uhlenbeck process (tau = 2.0s)
     let tau = 2.0;
     let alpha = (-dt / tau).exp();
     let noise = (1.0 - alpha * alpha).sqrt() * turn_noise_sigma * rng.gauss(0.0, 1.0);
     let mut omega_new = alpha * omega + noise;
 
-    // 2. Clamp omega using speed-dependent limit
-    let max_turn = ttc.a_lat / v.max(0.1);
+    // 3. Clamp omega using speed-dependent limit (uses updated speed)
+    let max_turn = ttc.a_lat / v_new.max(0.1);
     let limit = max_turn.min(ttc.omega_cap);
     omega_new = omega_new.clamp(-limit, limit);
-
-    // 3. Update speed (longitudinal)
-    let v_noise = rng.gauss(0.0, speed_noise) * dt;
-    let v_new = (v + v_noise).clamp(ttc.v_min, ttc.v_max);
 
     // 4. Update heading and position (chord identity)
     let half = 0.5 * omega_new * dt;
