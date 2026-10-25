@@ -43,6 +43,7 @@ pub struct Particle {
     pub v: f64,
     pub psi: f64,
     pub omega: f64,
+    pub is_turning: bool,
     pub weight: f64,
 }
 
@@ -126,12 +127,16 @@ pub fn predict(
         ];
         let v = ttc.v_min + (ttc.v_max - ttc.v_min) * rng.next_f64();
         let psi = 2.0 * PI * rng.next_f64();
+        // 20% of particles start in coordinated-turn mode so the filter can
+        // track sustained maneuvers (spirals / orbits) as well as decaying turns.
+        let is_turning = rng.next_f64() < 0.2;
         particles.push(Particle {
             x: pos[0],
             y: pos[1],
             v,
             psi,
             omega: 0.0,
+            is_turning,
             weight: (1.0 / n_samples as f64).ln(),
         });
     }
@@ -152,6 +157,7 @@ pub fn predict(
                 dt,
                 cfg.speed_noise_mps,
                 0.2,
+                p.is_turning,
                 &mut rng,
                 ttc,
             );
@@ -199,6 +205,28 @@ pub fn predict(
     }
 
     // ---- 3. PREDICTION LOOP (fan generation) -------------------------------
+    // Compute the estimated speed and turn rate from the post-filter particle
+    // set. `v_est` is the weighted mean speed over all particles; `omega_est`
+    // is the weighted mean turn rate over the coordinated-turn particles only
+    // (those with is_turning == true), since the non-turning particles drift
+    // back toward zero and would bias the turn-rate estimate.
+    let mut v_sum = 0.0;
+    let mut omega_turn_sum = 0.0;
+    let mut omega_turn_count = 0.0;
+    for p in particles.iter() {
+        v_sum += p.weight * p.v;
+        if p.is_turning {
+            omega_turn_sum += p.weight * p.omega;
+            omega_turn_count += p.weight;
+        }
+    }
+    let v_est = if n_samples > 0 { v_sum / n_samples as f64 } else { 0.0 };
+    let omega_est = if omega_turn_count > 0.0 {
+        omega_turn_sum / omega_turn_count
+    } else {
+        0.0
+    };
+
     // Resample once so every particle has equal weight 1/N before prediction,
     // then fan each particle forward to the horizon with the OU turn-rate
     // model, histogramming the final heading. State is copied to locals so the
@@ -229,6 +257,7 @@ pub fn predict(
                 dt_step,
                 cfg.speed_noise_mps,
                 0.2,
+                p.is_turning,
                 &mut rng,
                 ttc,
             );
@@ -266,5 +295,7 @@ pub fn predict(
         sector90,
         point_cloud,
         final_heading_mean,
+        v_est,
+        omega_est,
     }
 }

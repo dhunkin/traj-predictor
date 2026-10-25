@@ -48,4 +48,6 @@ pub struct Prediction {
     pub sector90: f64,
     pub point_cloud: Vec<[f64; 2]>,
     pub final_heading_mean: f64,
+    pub v_est: f64,
+    pub omega_est: f64,
 }

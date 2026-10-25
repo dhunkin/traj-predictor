@@ -54,10 +54,18 @@ pub fn propagate(
 /// Propagate the state one step forward using a time-correlated turn-rate
 /// (Ornstein-Uhlenbeck) model with speed-dependent lateral-acceleration limits.
 ///
+/// `is_turning` selects between two turn-rate dynamics:
+///   - `false` (normal): the OU process mean-reverts to zero (a coordinated
+///     turn that decays), with stationary std-dev `turn_noise_sigma` and
+///     mean-reversion time `tau`.
+///   - `true` (coordinated turn): the turn-rate drifts slowly as a random walk
+///     around its current value with no mean reversion, so a sustained turn
+///     (spiral / orbit) can be tracked.
+///
 /// Returns `(pos_new, psi_new, v_new, omega_new)`:
 ///   1. `v` is perturbed by longitudinal Gaussian noise (scaled by `sqrt(dt)`)
 ///      and clamped to `[v_min, v_max]`.
-///   2. `omega` is updated via an OU process (mean-reversion time `tau = 2.0s`),
+///   2. `omega` is updated (OU process, or slow random walk when turning),
 ///      then clamped to a speed-dependent limit `min(a_lat / v_new, omega_cap)`.
 ///   3. `psi` and `pos` are updated via the chord/sinc identity.
 ///
@@ -71,6 +79,7 @@ pub fn propagate_step(
     dt: f64,
     speed_noise: f64,
     turn_noise_sigma: f64,
+    is_turning: bool,
     rng: &mut Xoshiro256ss,
     ttc: &Ttc,
 ) -> ([f64; 2], f64, f64, f64) {
@@ -78,11 +87,19 @@ pub fn propagate_step(
     let v_noise = rng.gauss(0.0, speed_noise) * dt.sqrt();
     let v_new = (v + v_noise).clamp(ttc.v_min, ttc.v_max);
 
-    // 2. Update omega using Ornstein-Uhlenbeck process (tau = 2.0s)
-    let tau = 2.0;
-    let alpha = (-dt / tau).exp();
-    let noise = (1.0 - alpha * alpha).sqrt() * turn_noise_sigma * rng.gauss(0.0, 1.0);
-    let mut omega_new = alpha * omega + noise;
+    // 2. Update omega. In coordinated-turn mode the rate drifts slowly as a
+    //    random walk with no mean reversion, so a sustained turn survives.
+    //    Otherwise the OU process mean-reverts to zero.
+    let mut omega_new;
+    if is_turning {
+        let drift = rng.gauss(0.0, 0.05 * dt.sqrt());
+        omega_new = omega + drift;
+    } else {
+        let tau = 2.0;
+        let alpha = (-dt / tau).exp();
+        let noise = (1.0 - alpha * alpha).sqrt() * turn_noise_sigma * rng.gauss(0.0, 1.0);
+        omega_new = alpha * omega + noise;
+    }
 
     // 3. Clamp omega using speed-dependent limit (uses updated speed)
     let max_turn = ttc.a_lat / v_new.max(0.1);
