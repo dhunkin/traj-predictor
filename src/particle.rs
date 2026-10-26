@@ -90,6 +90,25 @@ pub fn resample(particles: &mut Vec<Particle>, rng: &mut Xoshiro256ss) {
     *particles = chosen;
 }
 
+/// Weighted circular mean of the particle headings `psi`, used to anchor the
+/// prediction fan. The position-only filter leaves the heading under-determined,
+/// so the post-filter particle spread can cover the full 360 degrees; the mean
+/// gives a single robust heading that the fan is seeded from.
+fn weighted_circular_mean(particles: &[Particle]) -> f64 {
+    let mut sum_sin = 0.0;
+    let mut sum_cos = 0.0;
+    let mut total = 0.0;
+    for p in particles.iter() {
+        sum_sin += p.weight * p.psi.sin();
+        sum_cos += p.weight * p.psi.cos();
+        total += p.weight;
+    }
+    if total <= 0.0 {
+        return particles[0].psi;
+    }
+    sum_sin.atan2(sum_cos)
+}
+
 /// Unified particle filter over the full track.
 ///
 /// See the module docstring for the pipeline. `track` is the ordered list of
@@ -119,6 +138,12 @@ pub fn predict(
     // stored in the log domain.
     let mut particles: Vec<Particle> = Vec::with_capacity(n_samples);
     let cov_factor = Mat2::from_cov(track[0].cov);
+    // Estimate the initial heading from the first two observations so particles
+    // start clustered around the true track direction instead of spread over
+    // all of [0, 2*pi) (which was too broad and hurt convergence).
+    let dx = track[1].pos[0] - track[0].pos[0];
+    let dy = track[1].pos[1] - track[0].pos[1];
+    let psi_init = dy.atan2(dx);
     for _ in 0..n_samples {
         let noise = cov_factor.sample(&mut rng);
         let pos = [
@@ -126,7 +151,7 @@ pub fn predict(
             track[0].pos[1] + noise.y,
         ];
         let v = ttc.v_min + (ttc.v_max - ttc.v_min) * rng.next_f64();
-        let psi = 2.0 * PI * rng.next_f64();
+        let psi = psi_init + rng.gauss(0.0, 0.5); // std dev ~30 degrees
         // 20% of particles start in coordinated-turn mode so the filter can
         // track sustained maneuvers (spirals / orbits) as well as decaying turns.
         let is_turning = rng.next_f64() < 0.2;
@@ -156,7 +181,7 @@ pub fn predict(
                 p.omega,
                 dt,
                 cfg.speed_noise_mps,
-                0.2,
+                0.05, // tighter motion noise: trust the radar more
                 p.is_turning,
                 &mut rng,
                 ttc,
@@ -169,16 +194,25 @@ pub fn predict(
 
             // 2D Mahalanobis likelihood (with noise floor), applied in the log
             // domain so weights accumulate without underflowing to 0.
-            let floor = 0.5; // Measurement noise floor to prevent underflow
+            let floor = 0.1; // Measurement noise floor to prevent underflow
             let a = obs.cov[0] + floor;
             let b = obs.cov[1];
             let c = obs.cov[2] + floor;
             let det = a * c - b * b;
             let dx = p.x - obs.pos[0];
             let dy = p.y - obs.pos[1];
-            let d2 = (c * dx * dx - 2.0 * b * dx * dy + a * dy * dy) / det.max(1e-9);
+            let mut d2 = (c * dx * dx - 2.0 * b * dx * dy + a * dy * dy) / det.max(1e-9);
+            // Heading term: observations carry psi, and the position-only
+            // likelihood leaves the particle heading under-determined (a nearly
+            // straight track constrains psi weakly, so the post-filter heading
+            // spread can cover the full 360 deg and the fan points the wrong
+            // way). Weighting the heading by psi_obs keeps the fan anchored to
+            // the true track direction.
+            let head_sigma = 0.5;
+            let dpsi = (p.psi - obs.psi).rem_euclid(2.0 * PI) - PI;
+            d2 += dpsi * dpsi / (head_sigma * head_sigma);
             let log_likelihood = -0.5 * d2;
-            p.weight = p.weight.ln() + log_likelihood;
+            p.weight += log_likelihood;
         }
 
         // Log-domain normalisation (log-sum-exp); rescue to uniform if the
@@ -231,21 +265,40 @@ pub fn predict(
     // then fan each particle forward to the horizon with the OU turn-rate
     // model, histogramming the final heading. State is copied to locals so the
     // stored particle is not mutated.
+    //
+    // Because the filter uses a position-only likelihood, the heading `psi` of
+    // the post-filter particle set is only weakly constrained (a nearly-straight
+    // track leaves psi under-determined). To keep the fan from spreading over
+    // the full 360 degrees we anchor every particle's initial heading to the
+    // weighted circular mean `psi_est`, while still letting each particle keep
+    // its own omega so the fan curls inward for a turning / spiral track.
+    let psi_est = weighted_circular_mean(&particles);
     resample(&mut particles, &mut rng);
     let mut counts = vec![0u64; n_bins];
-    let mut point_cloud = Vec::with_capacity(n_samples);
     let bin_width = 2.0 * PI / n_bins as f64;
+    let mut point_cloud = Vec::with_capacity(n_samples);
     let mut sum_sin = 0.0;
     let mut sum_cos = 0.0;
 
     for p in particles.iter() {
         let mut pos = [p.x, p.y];
         let mut v = p.v;
-        let mut psi = p.psi;
-        let mut omega = p.omega;
+        let mut psi = psi_est;
 
         let mut time = 0.0;
         let n_steps = (cfg.horizon_s / 0.5).ceil() as usize;
+        // Prediction-fan motion noise. Kept tight (0.05, same as the filter) so
+        // the fan spreads moderately over the horizon instead of re-opening the
+        // heading sector the way 0.2 did (straight s90 205 deg -> 55 deg).
+        let fan_sigma = 0.05;
+        // Turning particles hold their own post-filter turn rate so the fan curls
+        // inward like the true spiral; non-turning particles use the mean rate
+        // for a tight, straight-ahead fan.
+        let mut omega = if p.is_turning {
+            p.omega // own: each particle keeps its post-filter rate
+        } else {
+            omega_est
+        };
         for _ in 0..n_steps {
             let dt_step = (cfg.horizon_s - time).min(0.5);
             if dt_step <= 0.0 { break; }
@@ -256,7 +309,7 @@ pub fn predict(
                 omega,
                 dt_step,
                 cfg.speed_noise_mps,
-                0.2,
+                fan_sigma,
                 p.is_turning,
                 &mut rng,
                 ttc,

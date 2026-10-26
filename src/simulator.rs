@@ -131,7 +131,7 @@ pub fn generate_curved_track(
 }
 
 /// Sample one dense point (position, heading, speed) of the trajectory at time t.
-fn sample_point(
+pub fn sample_point(
     traj: &Trajectory,
     t: f64,
     duration_s: f64,

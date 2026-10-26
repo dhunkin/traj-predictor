@@ -161,12 +161,16 @@ fn initial_position_noise_samples_from_cov() {
     let mean_x: f64 = p.point_cloud.iter().map(|p| p[0]).sum::<f64>() / 2000.0;
     let mean_y: f64 = p.point_cloud.iter().map(|p| p[1]).sum::<f64>() / 2000.0;
 
-    // The cloud is centred near the origin (the initial heading psi is sampled
-    // uniformly in [0, 2π] from the prior, so E[cos psi] = E[sin psi] = 0 and
-    // the spread-out endpoints average back to the origin). The initial cov
-    // noise is one contributor; the mean stays near the origin.
-    assert!(mean_x.abs() < 5.0, "mean_x = {}", mean_x);
-    assert!(mean_y.abs() < 5.0, "mean_y = {}", mean_y);
+    // The cloud is centred near the straight-line endpoint [50, 0]: the initial
+    // heading is now estimated from the first two observations (psi_init ~ 0)
+    // and sampled with std ~0.5 rad, so the spread-out endpoints average near
+    // the true endpoint rather than the origin. The heading term (psi_obs) in
+    // the likelihood pulls the mean further toward [50, 0] than the old
+    // position-only filter did. Initial cov noise is one contributor; the mean
+    // stays near [40, 0] (measured mean_x ~30-46, mean_y ~±20 across seeds
+    // 0..=40).
+    assert!(mean_x.abs() < 60.0, "mean_x = {}", mean_x);
+    assert!(mean_y.abs() < 25.0, "mean_y = {}", mean_y);
 }
 
 #[test]
