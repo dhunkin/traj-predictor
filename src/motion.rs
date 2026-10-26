@@ -58,14 +58,23 @@ pub fn propagate(
 ///   - `false` (normal): the OU process mean-reverts to zero (a coordinated
 ///     turn that decays), with stationary std-dev `turn_noise_sigma` and
 ///     mean-reversion time `tau`.
-///   - `true` (coordinated turn): the turn-rate drifts slowly as a random walk
-///     around its current value with no mean reversion, so a sustained turn
-///     (spiral / orbit) can be tracked.
+///   - `true` (coordinated turn): the turn-rate holds its current value with
+///     only a tiny random-walk drift (in the filter phase), so a sustained
+///     turn (spiral / orbit) can be tracked.
+///
+/// `predicting` selects how the turning particle's omega is handled:
+///   - `false` (filter phase): the turning particle keeps its current omega
+///     with only a tiny `0.01` random-walk drift, so the filtered rate is
+///     preserved across steps.
+///   - `true` (prediction phase): the turning particle holds omega EXACTLY
+///     (`omega_new = omega`, no random walk). The fan spread comes from the
+///     different filtered omega each particle carries, not from adding fresh
+///     noise that would scramble the arc into a chaotic scribble.
 ///
 /// Returns `(pos_new, psi_new, v_new, omega_new)`:
 ///   1. `v` is perturbed by longitudinal Gaussian noise (scaled by `sqrt(dt)`)
 ///      and clamped to `[v_min, v_max]`.
-///   2. `omega` is updated (OU process, or slow random walk when turning),
+///   2. `omega` is updated (OU process, or held when turning + predicting),
 ///      then clamped to a speed-dependent limit `min(a_lat / v_new, omega_cap)`.
 ///   3. `psi` and `pos` are updated via the chord/sinc identity.
 ///
@@ -80,6 +89,7 @@ pub fn propagate_step(
     speed_noise: f64,
     turn_noise_sigma: f64,
     is_turning: bool,
+    predicting: bool,
     rng: &mut Xoshiro256ss,
     ttc: &Ttc,
 ) -> ([f64; 2], f64, f64, f64) {
@@ -87,20 +97,31 @@ pub fn propagate_step(
     let v_noise = rng.gauss(0.0, speed_noise) * dt.sqrt();
     let v_new = (v + v_noise).clamp(ttc.v_min, ttc.v_max);
 
-    // 2. Update omega. In coordinated-turn mode the rate drifts slowly as a
-    //    random walk with no mean reversion, so a sustained turn survives.
-    //    Otherwise the OU process mean-reverts to zero.
+    // 2. Update omega. Two turn-rate dynamics, selected by `is_turning`:
     //
-    //    Turning particles keep a *fixed* drift std (0.01) instead of the
-    //    caller-supplied `turn_noise_sigma`: the filter's own turn_noise would
-    //    decay their rate (mean-reversion) or spread it too wide, so a
-    //    sustained turn (spiral / orbit) would die during prediction. Holding
-    //    the filtered rate with only a tiny 0.01 random-walk drift keeps the
-    //    curl strong and coherent across the horizon (spec STEP 2.2).
+    //   - `true` (coordinated turn): the turn-rate holds its current value.
+    //     In the filter phase a tiny `0.01` random-walk drift is kept so the
+    //     filtered rate survives; in the prediction phase omega is held EXACTLY
+    //     (`omega_new = omega`) so the fan arc stays coherent — the spread that
+    //     matters comes from each particle's own filtered omega, not from fresh
+    //     noise (STEP 2). The caller-supplied `turn_noise_sigma` is deliberately
+    //     NOT used here: the filter's own turn_noise would either decay the
+    //     rate (mean reversion) or spread it too wide, killing the curl.
+    //
+    //   - `false` (straight): the OU process mean-reverts to zero (a turn that
+    //     decays), with stationary std-dev `turn_noise_sigma` and mean-reversion
+    //     time `tau`.
     let mut omega_new;
     if is_turning {
-        let drift = rng.gauss(0.0, 0.01);
-        omega_new = omega + drift;
+        if predicting {
+            // Prediction phase: hold omega exactly, no random walk.
+            omega_new = omega;
+        } else {
+            // Filter phase: keep the filtered rate with a tiny 0.01
+            // random-walk drift so the omega spread survives across steps.
+            let drift = rng.gauss(0.0, 0.01);
+            omega_new = omega + drift;
+        }
     } else {
         let tau = 2.0;
         let alpha = (-dt / tau).exp();

@@ -155,12 +155,19 @@ pub fn predict(
         // 20% of particles start in coordinated-turn mode so the filter can
         // track sustained maneuvers (spirals / orbits) as well as decaying turns.
         let is_turning = rng.next_f64() < 0.2;
+        // Turning particles are seeded with a range of turn rates (gauss, std
+        // 0.3 rad/s) so the filter can reweight them toward the true curvature.
+        // The physics holds each turning particle's omega with only tiny drift,
+        // so the init spread is what lets the filter discover the right turn rate
+        // — a single omega = 0 would make every turning particle fly straight and
+        // die on a curved track. Non-turning particles start at omega = 0 (straight).
+        let omega = if is_turning { rng.gauss(0.0, 0.3) } else { 0.0 };
         particles.push(Particle {
             x: pos[0],
             y: pos[1],
             v,
             psi,
-            omega: 0.0,
+            omega,
             is_turning,
             weight: (1.0 / n_samples as f64).ln(),
         });
@@ -183,6 +190,7 @@ pub fn predict(
                 cfg.speed_noise_mps,
                 0.05, // tighter motion noise: trust the radar more
                 p.is_turning,
+                false, // filter phase: keep the filtered rate with tiny drift
                 &mut rng,
                 ttc,
             );
@@ -193,41 +201,41 @@ pub fn predict(
             p.omega = omega_new;
 
             // 2D Mahalanobis likelihood (with noise floor), applied in the log
-            // domain so weights accumulate without underflowing to 0.
+            // domain so weights accumulate without underflowing to 0. Turning and
+            // non-turning particles share the SAME position covariance so neither
+            // is unfairly favoured: a non-turning particle flying straight on a
+            // straight track is not penalised, and a turning particle curving away
+            // is not over-rewarded (STEP 1). This keeps the surviving turning
+            // fraction near its ~20% init rate instead of saturating at 100%.
             let floor = 0.1; // Measurement noise floor to prevent underflow
             let mut a = obs.cov[0] + floor;
             let mut b = obs.cov[1];
             let mut c = obs.cov[2] + floor;
-            // STEP 2.1: on a curving track a turning particle that has a slightly
-            // wrong omega legitimately sits off the dashed line. Penalising it
-            // with the same tight position covariance as a straight-track particle
-            // starves the whole turning hypothesis. Widen the position term for
-            // turning particles (scale a, b, c up) so their Mahalanobis d2 is
-            // smaller and they survive the filter while the track curves.
-            if p.is_turning {
-                a *= 2.0;
-                b *= 2.0;
-                c *= 2.0;
-            }
             let det = a * c - b * b;
             let dx = p.x - obs.pos[0];
             let dy = p.y - obs.pos[1];
             let mut d2 = (c * dx * dx - 2.0 * b * dx * dy + a * dy * dy) / det.max(1e-9);
-            // Heading term: observations carry psi, and the position-only
-            // likelihood leaves the particle heading under-determined (a nearly
-            // straight track constrains psi weakly, so the post-filter heading
-            // spread can cover the full 360 deg and the fan points the wrong
-            // way). Weighting the heading by psi_obs keeps the fan anchored to
-            // the true track direction.
-            // STEP 3: heading term. Tight head_sigma (0.2) for non-turning
-            // particles so the filter respects obs.psi strictly (fixes sine
-            // lag). Looser head_sigma (0.5) for turning particles so their
-            // OU-driven psi spread survives the filter instead of collapsing
-            // on a curve.
-            let head_sigma = if p.is_turning { 0.5 } else { 0.2 };
+            // Heading term: the filter must follow the observed heading
+            // (obs.psi) so the fan points along the true track, fixing the sine
+            // lag. A moderate head_sigma (0.3) for EVERY particle anchors psi
+            // tightly enough to stop the fan scattering chaotically on curves,
+            // but not so tight (0.1) that turning particles are killed in a
+            // single step.
+            let head_sigma = 0.3;
             // Signed heading difference in [-pi, pi]: ((a - b + pi) mod 2pi) - pi.
             let dpsi = ((p.psi - obs.psi + PI).rem_euclid(2.0 * PI)) - PI;
             d2 += dpsi * dpsi / (head_sigma * head_sigma);
+
+            // Survival bonus for turning particles: on a curve the position term
+            // of a turning particle is legitimately off the dashed line, so a
+            // single tight step would kill every turning particle at once
+            // (the "all-or-nothing" problem). Reducing the penalty slightly lets
+            // the turning hypothesis survive across steps; the spread that
+            // matters comes from the different filtered omega per particle, not
+            // from reweighting the whole class in or out at once.
+            if p.is_turning {
+                d2 *= 0.9;
+            }
             let log_likelihood = -0.5 * d2;
             p.weight += log_likelihood;
         }
@@ -343,6 +351,7 @@ pub fn predict(
                 cfg.speed_noise_mps,
                 fan_sigma,
                 p.is_turning,
+                true, // prediction phase: hold omega exactly, no random walk
                 &mut rng,
                 ttc,
             );
