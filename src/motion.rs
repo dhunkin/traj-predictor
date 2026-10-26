@@ -90,9 +90,16 @@ pub fn propagate_step(
     // 2. Update omega. In coordinated-turn mode the rate drifts slowly as a
     //    random walk with no mean reversion, so a sustained turn survives.
     //    Otherwise the OU process mean-reverts to zero.
+    //
+    //    Turning particles keep a *fixed* drift std (0.01) instead of the
+    //    caller-supplied `turn_noise_sigma`: the filter's own turn_noise would
+    //    decay their rate (mean-reversion) or spread it too wide, so a
+    //    sustained turn (spiral / orbit) would die during prediction. Holding
+    //    the filtered rate with only a tiny 0.01 random-walk drift keeps the
+    //    curl strong and coherent across the horizon (spec STEP 2.2).
     let mut omega_new;
     if is_turning {
-        let drift = rng.gauss(0.0, 0.05 * dt.sqrt());
+        let drift = rng.gauss(0.0, 0.01);
         omega_new = omega + drift;
     } else {
         let tau = 2.0;

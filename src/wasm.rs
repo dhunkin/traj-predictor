@@ -300,6 +300,11 @@ pub struct PredictionResult {
     bin_centers: Box<[f64]>,
     bin_probs: Box<[f64]>,
     point_cloud: Box<[f64]>,
+    /// Flattened per-particle trajectory polylines: `[x0, y0, x1, y1, ...]`
+    /// concatenated for all particles. `path_lengths` gives each polyline's
+    /// point count so JS can slice them back out.
+    path_cloud: Box<[f64]>,
+    path_lengths: Box<[u32]>,
     sector50: f64,
     sector90: f64,
     final_heading_mean: f64,
@@ -314,10 +319,22 @@ impl PredictionResult {
             point_cloud.push(pt[1]);
         }
 
+        let mut path_cloud = Vec::with_capacity(p.path_cloud.len() * 2);
+        let mut path_lengths = Vec::with_capacity(p.path_cloud.len());
+        for path in &p.path_cloud {
+            path_lengths.push(path.len() as u32);
+            for pt in path {
+                path_cloud.push(pt[0]);
+                path_cloud.push(pt[1]);
+            }
+        }
+
         PredictionResult {
             bin_centers: p.bin_centers.into_boxed_slice(),
             bin_probs: p.bin_probs.into_boxed_slice(),
             point_cloud: point_cloud.into_boxed_slice(),
+            path_cloud: path_cloud.into_boxed_slice(),
+            path_lengths: path_lengths.into_boxed_slice(),
             sector50: p.sector50,
             sector90: p.sector90,
             final_heading_mean: p.final_heading_mean,
@@ -337,6 +354,16 @@ impl PredictionResult {
     /// `Float64Array` of the point cloud as `[x0, y0, x1, y1, ...]`.
     pub fn point_cloud(&self) -> Box<[f64]> {
         self.point_cloud.clone()
+    }
+
+    /// `Float64Array` of flattened per-particle path polylines.
+    pub fn path_cloud(&self) -> Box<[f64]> {
+        self.path_cloud.clone()
+    }
+
+    /// `Uint32Array` of per-particle path point counts, one per particle.
+    pub fn path_lengths(&self) -> Box<[u32]> {
+        self.path_lengths.clone()
     }
 
     /// 50% sector width (radians).

@@ -47,6 +47,11 @@ pub struct Prediction {
     pub sector50: f64,
     pub sector90: f64,
     pub point_cloud: Vec<[f64; 2]>,
+    /// Per-particle trajectory polylines (one `Vec<[f64;2]>` per particle), each
+    /// sampled every prediction step from the post-filter position to the horizon
+    /// end. `point_cloud` only keeps final positions; `path_cloud` retains the
+    /// full arc so the demo can draw the ribbon as distinct curved lines.
+    pub path_cloud: Vec<Vec<[f64; 2]>>,
     pub final_heading_mean: f64,
     pub v_est: f64,
     pub omega_est: f64,

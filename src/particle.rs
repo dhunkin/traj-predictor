@@ -195,9 +195,20 @@ pub fn predict(
             // 2D Mahalanobis likelihood (with noise floor), applied in the log
             // domain so weights accumulate without underflowing to 0.
             let floor = 0.1; // Measurement noise floor to prevent underflow
-            let a = obs.cov[0] + floor;
-            let b = obs.cov[1];
-            let c = obs.cov[2] + floor;
+            let mut a = obs.cov[0] + floor;
+            let mut b = obs.cov[1];
+            let mut c = obs.cov[2] + floor;
+            // STEP 2.1: on a curving track a turning particle that has a slightly
+            // wrong omega legitimately sits off the dashed line. Penalising it
+            // with the same tight position covariance as a straight-track particle
+            // starves the whole turning hypothesis. Widen the position term for
+            // turning particles (scale a, b, c up) so their Mahalanobis d2 is
+            // smaller and they survive the filter while the track curves.
+            if p.is_turning {
+                a *= 2.0;
+                b *= 2.0;
+                c *= 2.0;
+            }
             let det = a * c - b * b;
             let dx = p.x - obs.pos[0];
             let dy = p.y - obs.pos[1];
@@ -208,8 +219,14 @@ pub fn predict(
             // spread can cover the full 360 deg and the fan points the wrong
             // way). Weighting the heading by psi_obs keeps the fan anchored to
             // the true track direction.
-            let head_sigma = 0.5;
-            let dpsi = (p.psi - obs.psi).rem_euclid(2.0 * PI) - PI;
+            // STEP 3: heading term. Tight head_sigma (0.2) for non-turning
+            // particles so the filter respects obs.psi strictly (fixes sine
+            // lag). Looser head_sigma (0.5) for turning particles so their
+            // OU-driven psi spread survives the filter instead of collapsing
+            // on a curve.
+            let head_sigma = if p.is_turning { 0.5 } else { 0.2 };
+            // Signed heading difference in [-pi, pi]: ((a - b + pi) mod 2pi) - pi.
+            let dpsi = ((p.psi - obs.psi + PI).rem_euclid(2.0 * PI)) - PI;
             d2 += dpsi * dpsi / (head_sigma * head_sigma);
             let log_likelihood = -0.5 * d2;
             p.weight += log_likelihood;
@@ -237,6 +254,9 @@ pub fn predict(
             resample(&mut particles, &mut rng);
         }
     }
+
+    let turning_count = particles.iter().filter(|p| p.is_turning).count();
+    println!("DEBUG: Surviving turning particles: {} / {}", turning_count, n_samples);
 
     // ---- 3. PREDICTION LOOP (fan generation) -------------------------------
     // Compute the estimated speed and turn rate from the post-filter particle
@@ -277,6 +297,7 @@ pub fn predict(
     let mut counts = vec![0u64; n_bins];
     let bin_width = 2.0 * PI / n_bins as f64;
     let mut point_cloud = Vec::with_capacity(n_samples);
+    let mut path_cloud = Vec::with_capacity(n_samples);
     let mut sum_sin = 0.0;
     let mut sum_cos = 0.0;
 
@@ -287,6 +308,10 @@ pub fn predict(
 
         let mut time = 0.0;
         let n_steps = (cfg.horizon_s / 0.5).ceil() as usize;
+        // Sample the full per-particle trajectory so the demo can draw the
+        // ribbon as distinct curved lines instead of a single straight sector.
+        let mut path: Vec<[f64; 2]> = Vec::with_capacity(n_steps + 1);
+        path.push(pos);
         // Prediction-fan motion noise. Kept tight (0.05, same as the filter) so
         // the fan spreads moderately over the horizon instead of re-opening the
         // heading sector the way 0.2 did (straight s90 205 deg -> 55 deg).
@@ -302,6 +327,13 @@ pub fn predict(
         for _ in 0..n_steps {
             let dt_step = (cfg.horizon_s - time).min(0.5);
             if dt_step <= 0.0 { break; }
+            // STEP 2.3: on a curve the turn costs speed (centripetal loss), so
+            // turning particles ease off slightly each step. Non-turning
+            // particles keep their full speed. Applied before propagate so the
+            // reduced speed feeds the arc geometry.
+            if p.is_turning {
+                v *= 0.995;
+            }
             let (pos_new, psi_new, v_new, omega_new) = propagate_step(
                 pos,
                 v,
@@ -319,9 +351,11 @@ pub fn predict(
             v = v_new;
             omega = omega_new;
             time += dt_step;
+            path.push(pos);
         }
 
         point_cloud.push(pos);
+        path_cloud.push(path);
         let idx = bin_index(psi, n_bins);
         counts[idx] += 1;
         sum_sin += psi.sin();
@@ -347,6 +381,7 @@ pub fn predict(
         sector50,
         sector90,
         point_cloud,
+        path_cloud,
         final_heading_mean,
         v_est,
         omega_est,

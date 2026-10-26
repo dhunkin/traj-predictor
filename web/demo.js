@@ -103,6 +103,7 @@ function draw() {
   ctx.clearRect(0, 0, fan.width, fan.height);
   const showTrack = el('show_track').checked;
   const showCloud = el('show_cloud').checked;
+  const showRibbon = el('show_paths').checked;
 
   // Track polyline + observation dots.
   if (showTrack && observations.length) {
@@ -153,6 +154,13 @@ function draw() {
       ctx.arc(px, py, 1.5, 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+
+  // Trajectory ribbon: draw a subset of per-particle polylines (every Nth
+  // particle) with higher alpha so the distinct curved lines are visible
+  // instead of a solid cone. Drawn below the fan so the fan colors show.
+  if (showRibbon && pred && pred.path_cloud) {
+    drawPathRibbon(pred.path_cloud, showCloud);
   }
 
   if (!pred) return;
@@ -231,6 +239,31 @@ function drawSectorContour(ax, ay, mean, width, color, last) {
   ctx.moveTo(ax, ay);
   ctx.lineTo(x1, y1);
   ctx.stroke();
+}
+
+// Draw the trajectory ribbon: a subset of per-particle polylines so the
+// distinct curved lines show instead of a solid cone. Every Nth particle is
+// drawn with a higher alpha so the lines stand out against the point cloud.
+function drawPathRibbon(path_cloud, showCloud) {
+  if (!path_cloud || path_cloud.length === 0) return;
+  // Draw every Nth particle; fewer lines for large particle counts.
+  const n = path_cloud.length;
+  const step = n > 2000 ? 100 : n > 1000 ? 50 : 25;
+  ctx.save();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+  for (let i = 0; i < n; i += step) {
+    const path = path_cloud[i];
+    if (!path || path.length < 2) continue;
+    ctx.beginPath();
+    for (let j = 0; j < path.length; j++) {
+      const [px, py] = metersToScreen(path[j][0], path[j][1]);
+      if (j === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 // ---- Trajectory parameter UI -----------------------------------------------
@@ -421,6 +454,7 @@ async function predict() {
       bin_centers: res.bin_centers,
       bin_probs: res.bin_probs,
       point_cloud: res.point_cloud,
+      path_cloud: res.path_cloud, // [[ [x,y], ... ], ...] one polyline per particle
       final_heading_mean: res.heading_mean,
       sector50: res.sector50,
       sector90: res.sector90,

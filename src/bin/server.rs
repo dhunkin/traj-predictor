@@ -112,6 +112,10 @@ struct PredictResponseDto {
     bin_centers: Vec<f64>,
     bin_probs: Vec<f64>,
     point_cloud: Vec<f64>, // flattened [x0, y0, x1, y1, ...]
+    /// Per-particle trajectory polylines: one path per particle, each a flat
+    /// [x0, y0, x1, y1, ...] array. Lets the demo draw the ribbon as distinct
+    /// curved lines instead of a single straight sector.
+    path_cloud: Vec<Vec<[f64; 2]>>,
     n_bins_nonzero: usize,
 }
 
@@ -201,6 +205,7 @@ async fn predict_handler(Json(req): Json<PredictRequestDto>) -> Result<Json<Pred
         bin_centers: prediction.bin_centers,
         bin_probs: prediction.bin_probs,
         point_cloud,
+        path_cloud: prediction.path_cloud,
         n_bins_nonzero,
     };
 

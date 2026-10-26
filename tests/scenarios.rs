@@ -131,10 +131,11 @@ fn straight_1_ooi_no_noise() {
     let prediction = predict(&track, &t, &[], &c);
 
     let sector90_deg = prediction.sector90 * 180.0 / PI;
-    // Tight (heading term anchors psi) but not a full circle.
+    // Tight (heading term anchors psi) but not a full circle. With the corrected
+    // heading term the fan points toward ground truth; s90 ~60 deg.
     assert!(
-        sector90_deg > 90.0 && sector90_deg < 145.0,
-        "sector90_deg = {}, expected ~125-140 (heading term), < 145",
+        sector90_deg > 20.0 && sector90_deg < 120.0,
+        "sector90_deg = {}, expected ~60 (heading term), < 120",
         sector90_deg
     );
 
@@ -190,11 +191,13 @@ fn two_oois_between() {
         right > 0.01 && left > 0.01,
         "expected mass on both sides: right max = {right}, left max = {left}"
     );
-    // Two-sided spread: the 90% sector is wide (well over a quarter circle).
+    // Two-sided spread around ground truth. With the corrected heading term the
+    // fan points toward psi=0 (ground truth) with a symmetric band; the 90%
+    // sector is ~60 deg (was expected > 90 under the buggy heading term).
     let sector90_deg = prediction.sector90 * 180.0 / PI;
     assert!(
-        sector90_deg > 90.0,
-        "sector90_deg = {}, expected wide two-sided spread",
+        sector90_deg > 20.0 && sector90_deg < 120.0,
+        "sector90_deg = {}, expected ~60 (heading term anchors psi)",
         sector90_deg
     );
 }
@@ -411,7 +414,8 @@ fn reference_scenario_numbers() {
     // true endpoint [20, 0]. The heading term (psi_obs) in the likelihood anchors
     // the post-filter heading near ground truth (0); it is no longer spread over
     // the full circle the way the old position-only filter left it. Measured at
-    // seed 42: s50 ~80 deg, s90 ~215 deg, |mean| ~63 deg, all 72 bins populated.
+    // seed 42 (with the corrected signed heading term): s50 ~25 deg, s90 ~60 deg,
+    // |mean| ~1 deg, ~28 bins populated (the heading term concentrates the fan).
     let track = straight_track(20.0, 0.0, [1.0, 0.0, 1.0], 5, 1.0, 5.0);
     let t = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 1.0);
     let c = cfg(10.0, 10000, 0.3, 72, 42, 0.5);
@@ -426,41 +430,38 @@ fn reference_scenario_numbers() {
         .filter(|&&p| p > 0.0)
         .count();
 
-    // Position learned from the track, plus the heading term, keeps the mean
-    // heading near ground truth — but the heading is still spread over the
-    // horizon by the OU turn-rate model, and the is_turning particles (20%
-    // hypothesis of a maneuver) pull the circular mean off the true heading.
-    // At seed 42 the mean is ~63 deg (not ~0), so we assert it near the new
-    // value rather than near 0.
+    // The heading term anchors psi near ground truth, so the mean heading stays
+    // near 0 (the is_turning particles pull it only slightly). At seed 42 the
+    // mean is ~1 deg, so we assert it near 0.
     let h = if heading_mean_deg > 180.0 {
         heading_mean_deg - 360.0
     } else {
         heading_mean_deg
     };
     assert!(
-        (h - 63.0).abs() < 15.0,
-        "heading_mean_deg = {}, expected ~63 (new heading-aware filter)",
+        h.abs() < 15.0,
+        "heading_mean_deg = {}, expected ~0 (heading term anchors psi)",
         heading_mean_deg
     );
 
-    // Heading term anchors psi near ground truth, so the 50% sector is a moderate
-    // band (~80 deg) rather than the wide (~95 deg) band of the old
-    // position-only filter. 90% sector still covers most of the circle (~215 deg)
-    // because the OU turn-rate model spreads the fan over the horizon. All 72 bins
-    // are populated.
+    // Heading term anchors psi near ground truth, so the 50% sector is a tight
+    // band (~25 deg) rather than the wide (~95 deg) band of the old
+    // position-only filter. 90% sector ~60 deg (the OU turn-rate model plus the
+    // is_turning particles spread the fan moderately). The heading term
+    // concentrates the fan, so fewer bins are populated.
     assert!(
-        (sector50_deg - 80.0).abs() < 15.0,
-        "sector50_deg = {}, expected ~80 (heading term anchors psi)",
+        (sector50_deg - 25.0).abs() < 20.0,
+        "sector50_deg = {}, expected ~25 (heading term anchors psi)",
         sector50_deg
     );
     assert!(
-        (sector90_deg - 215.0).abs() < 20.0,
-        "sector90_deg = {}, expected ~215 (OU spreads the fan)",
+        (sector90_deg - 60.0).abs() < 30.0,
+        "sector90_deg = {}, expected ~60 (heading term + OU spread)",
         sector90_deg
     );
     assert!(
-        n_bins_nonzero >= 70,
-        "n_bins_nonzero = {}, expected ~72 (wide heading spread)",
+        n_bins_nonzero >= 15,
+        "n_bins_nonzero = {}, expected ~28 (heading term concentrates the fan)",
         n_bins_nonzero
     );
 }
