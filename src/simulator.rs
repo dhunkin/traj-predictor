@@ -38,6 +38,38 @@ pub enum Trajectory {
     },
 }
 
+/// Estimate the maximum path speed and lateral acceleration `a_lat = v^2 * kappa`
+/// of an analytic trajectory over `[0, duration_s]`, sampled on a coarse grid.
+///
+/// Used by `generate_curved_track` to warn when the true path exceeds the
+/// turn-table constraints (`v_max`, `a_lat`): a path that physically cannot be
+/// traversed would make the filter cap its own particles and fall behind.
+fn path_speed_and_a_lat(
+    traj: &Trajectory,
+    duration_s: f64,
+    speed: f64,
+) -> (f64, f64) {
+    // theta grows linearly in t for the spiral, so sample uniformly across the
+    // duration; the other trajectories are smooth enough for the same grid.
+    let n = 128usize;
+    let mut v_max = 0.0f64;
+    let mut a_lat_max = 0.0f64;
+    for i in 0..=n {
+        let t = (i as f64 / n as f64) * duration_s;
+        let (_pos, psi, v) = sample_point(traj, t, duration_s, speed);
+        // Curvature kappa = |d(psi)/dt|; a_lat = v^2 * kappa.
+        let dt = duration_s / n as f64;
+        // Numerical derivative of psi over the grid cell.
+        let (_pos_p, psi_p, _) = sample_point(traj, t + dt, duration_s, speed);
+        let dpsi = (psi_p - psi).abs();
+        let kappa = dpsi / dt.max(1e-9);
+        let a_lat = v * v * kappa;
+        v_max = v_max.max(v);
+        a_lat_max = a_lat_max.max(a_lat);
+    }
+    (v_max, a_lat_max)
+}
+
 /// Generate a synthetic track for a curved (or straight) trajectory.
 ///
 /// Each observation is sampled analytically at `t_k = k * dt_obs_s`
@@ -58,8 +90,20 @@ pub fn generate_curved_track(
     dt_obs_s: f64,
     obs_cov: [f64; 3],
     seed: u64,
+    ttc: &Ttc,
 ) -> Vec<Observation> {
     assert!(dt_obs_s > 0.0, "dt_obs_s must be positive");
+
+    // Validate the analytic path against the turn-table constraints: the path
+    // speed must not exceed v_max and the lateral acceleration v^2 * kappa must
+    // not exceed a_lat. Warn to stderr if either is violated (non-fatal).
+    let (v_max_path, a_lat_max) = path_speed_and_a_lat(traj, duration_s, speed);
+    if v_max_path > ttc.v_max || a_lat_max > ttc.a_lat {
+        eprintln!(
+            "WARNING: Trajectory exceeds physical limits (a_lat = {:.3}, v = {:.3})",
+            a_lat_max, v_max_path
+        );
+    }
 
     let mut rng = Xoshiro256ss::from_seed(seed);
     let mat = Mat2::from_cov(obs_cov);

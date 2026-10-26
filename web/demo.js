@@ -70,13 +70,14 @@ const el = (id) => document.getElementById(id);
 const inputs = {
   seed: 'seed', v_min: 'v_min', v_max: 'v_max', a_lat: 'a_lat', a_long: 'a_long', omega_cap: 'omega_cap',
   horizon_s: 'horizon_s', duration_s: 'duration_s', n_samples: 'n_samples',
-  p_turn: 'p_turn', speed_noise_mps: 'speed_noise_mps', azimuth_bins: 'azimuth_bins',
+  p_turn: 'p_turn', speed_noise_mps: 'speed_noise_mps', azimuth_bins: 'azimuth_bins', sim_speed: 'sim_speed',
 };
 function val(id) { return parseFloat(el(inputs[id]).value); }
 function status(msg) { el('status').textContent = msg; }
 
 // ---- State -----------------------------------------------------------------
 let observations = []; // {t, x, y, cov_xx, cov_xy, cov_yy, v, psi}
+let true_future = []; // the analytic truth past duration_s (for the dashed line)
 let pred = null;
 // Last observation, hoisted to module scope so predict() can use it
 // regardless of handler scope (fixes "last is not defined" on Predict).
@@ -122,6 +123,25 @@ function draw() {
 
   if (!lastObservation) return;
   const last = lastObservation;
+
+  // True Future: the analytic truth past duration_s, drawn as a dashed black
+  // line from the last observation to the end of truth. Drawn first so the fan
+  // (drawn below) overlays it.
+  if (true_future.length) {
+    const pts = true_future.map((o) => metersToScreen(o.x, o.y));
+    // Start exactly at the last observation's screen position.
+    const start = metersToScreen(last.x, last.y);
+    ctx.save();
+    ctx.setLineDash([5, 5]);
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(start[0], start[1]);
+    for (let i = 0; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
 
   // Point cloud.
   if (showCloud && pred) {
@@ -263,8 +283,9 @@ function populateTrajParams() {
 async function simulate() {
   await W(async () => {
     const seed = BigInt(val('seed') | 0);
-    const speed = val('v_max');
+    const speed = val('sim_speed');
     const duration = val('duration_s');
+    const horizon = val('horizon_s');
     const dt = 1.0;
     const cov_xx = 1.0;
     const cov_xy = 0.0;
@@ -304,12 +325,26 @@ async function simulate() {
       dt_obs_s: dt,
       cov_xx, cov_xy, cov_yy,
       seed: Number(seed),
+      horizon_s: horizon,
+      ttc: {
+        v_min: val('v_min'),
+        v_max: val('v_max'),
+        a_lat: val('a_lat'),
+        a_long: val('a_long'),
+        omega_cap: val('omega_cap'),
+      },
     });
 
-    observations = res.observations.map((o) => ({
-      t: o.t, x: o.x, y: o.y, v: o.v, psi: o.psi,
-      cov_xx: o.cov_xx, cov_xy: o.cov_xy, cov_yy: o.cov_yy,
-    }));
+    // Split the returned observations: the first part (t <= duration_s) is the
+    // observed track fed to the filter; the remainder is the analytic truth
+    // past duration_s, drawn as the dashed "True Future" line.
+    const dur = duration;
+    observations = res.observations
+      .filter((o) => o.t <= dur)
+      .map((o) => ({ t: o.t, x: o.x, y: o.y, v: o.v, psi: o.psi, cov_xx: o.cov_xx, cov_xy: o.cov_xy, cov_yy: o.cov_yy }));
+    true_future = res.observations
+      .filter((o) => o.t > dur)
+      .map((o) => ({ t: o.t, x: o.x, y: o.y, v: o.v, psi: o.psi, cov_xx: o.cov_xx, cov_xy: o.cov_xy, cov_yy: o.cov_yy }));
     lastObservation = observations[observations.length - 1];
     pred = null;
     draw();

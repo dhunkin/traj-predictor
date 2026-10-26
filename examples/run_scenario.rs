@@ -183,6 +183,7 @@ fn parse_scenario(path: &str) -> (Ttc, Vec<Observation>, Vec<Ooi>, PredictConfig
             /* dt_obs */ 1.0,
             /* cov */ [1.0, 0.0, 1.0],
             /* seed */ 42,
+            /* ttc */ &ttc,
         );
         return (ttc, obs, oois, config, Some(traj.clone()), duration_s);
     }

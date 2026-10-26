@@ -136,7 +136,7 @@ impl Simulator {
             r_growth,
             turns,
         };
-        generate_curved_track(&traj, speed, duration, self.dt_obs_s, self.obs_cov, self.seed)
+        generate_curved_track(&traj, speed, duration, self.dt_obs_s, self.obs_cov, self.seed, &self.ttc)
             .into_flat()
     }
 
@@ -157,7 +157,7 @@ impl Simulator {
             amplitude_m: amplitude,
             direction,
         };
-        generate_curved_track(&traj, speed, duration, self.dt_obs_s, self.obs_cov, self.seed)
+        generate_curved_track(&traj, speed, duration, self.dt_obs_s, self.obs_cov, self.seed, &self.ttc)
             .into_flat()
     }
 
@@ -178,7 +178,7 @@ impl Simulator {
             angle_rad: angle,
             baseline_m: baseline,
         };
-        generate_curved_track(&traj, speed, duration, self.dt_obs_s, self.obs_cov, self.seed)
+        generate_curved_track(&traj, speed, duration, self.dt_obs_s, self.obs_cov, self.seed, &self.ttc)
             .into_flat()
     }
 
@@ -193,7 +193,7 @@ impl Simulator {
         duration: f64,
     ) -> Box<[f64]> {
         let traj = Trajectory::Straight { psi0 };
-        generate_curved_track(&traj, speed, duration, self.dt_obs_s, self.obs_cov, self.seed)
+        generate_curved_track(&traj, speed, duration, self.dt_obs_s, self.obs_cov, self.seed, &self.ttc)
             .into_flat()
     }
 }

@@ -126,6 +126,8 @@ struct SimulateRequestDto {
     cov_xy: f64,
     cov_yy: f64,
     seed: u64,
+    horizon_s: f64,
+    ttc: TtcDto,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,6 +216,15 @@ async fn simulate_handler(Json(req): Json<SimulateRequestDto>) -> Result<Json<Si
             .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("missing params[{}] ({})", i, name)))
     };
 
+    // Turn-table constraints for physical-limit validation of the true path.
+    let ttc = Ttc {
+        v_min: req.ttc.v_min,
+        v_max: req.ttc.v_max,
+        a_lat: req.ttc.a_lat,
+        a_long: req.ttc.a_long,
+        omega_cap: req.ttc.omega_cap,
+    };
+
     let traj = match req.trajectory_type.as_str() {
         "straight" => Trajectory::Straight {
             psi0: get(0, "psi0")?,
@@ -241,14 +252,19 @@ async fn simulate_handler(Json(req): Json<SimulateRequestDto>) -> Result<Json<Si
         }
     };
 
-    // Call the core track generator.
+    // Call the core track generator. Observations span the full scenario
+    // duration PLUS the prediction horizon (`duration_s + horizon_s`) so the
+    // frontend can render the "true future" (the unobserved truth past the
+    // last observation) as a dashed line.
+    let total_duration = req.duration_s + req.horizon_s;
     let observations = generate_curved_track(
         &traj,
         req.speed,
-        req.duration_s,
+        total_duration,
         req.dt_obs_s,
         [req.cov_xx, req.cov_xy, req.cov_yy],
         req.seed,
+        &ttc,
     )
     .into_iter()
     .map(ObservationDto::from)

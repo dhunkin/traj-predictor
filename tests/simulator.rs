@@ -222,7 +222,7 @@ fn curved_straight_equals_linear() {
     let dt_obs_s = 1.0;
     let seed = 42;
 
-    let obs = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, seed);
+    let obs = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, seed, &ttc());
     assert!(obs.len() >= 2, "expected multiple observations");
 
     for o in &obs {
@@ -251,7 +251,7 @@ fn curved_sine_y_bounded() {
     let dt_obs_s = 1.0;
     let seed = 7;
 
-    let obs = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, seed);
+    let obs = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, seed, &ttc());
     let mut max_y: f64 = 0.0;
     for o in &obs {
         max_y = max_y.max(o.pos[1].abs());
@@ -278,7 +278,7 @@ fn curved_zigzag_alternates() {
     let dt_obs_s = 1.0;
     let seed = 3;
 
-    let obs = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, seed);
+    let obs = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, seed, &ttc());
     assert!(obs.len() >= 5, "expected at least 5 observations");
 
     // Each leg spans segment_m/speed = 100/5 = 20 observation intervals, so the
@@ -309,7 +309,7 @@ fn curved_spiral_radius_grows() {
     let dt_obs_s = 1.0;
     let seed = 9;
 
-    let obs = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, seed);
+    let obs = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, seed, &ttc());
     let pos0 = obs[0].pos;
     let last = &obs[obs.len() - 1];
     let r0 = (pos0[0] * pos0[0] + pos0[1] * pos0[1]).sqrt();
@@ -336,8 +336,8 @@ fn curved_deterministic_from_seed() {
     let duration_s = 60.0;
     let dt_obs_s = 1.0;
 
-    let a = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, 12345);
-    let b = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, 12345);
+    let a = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, 12345, &ttc());
+    let b = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, 12345, &ttc());
 
     assert_eq!(a.len(), b.len(), "observation counts must match");
     for (x, y) in a.iter().zip(b.iter()) {
@@ -376,7 +376,7 @@ fn zigzag_psi_sign_matches_geometry() {
     let dt_obs_s = 1.0;
     let seed = 1;
 
-    let obs = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, seed);
+    let obs = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, seed, &ttc());
     assert!(obs.len() >= 22, "expected at least 22 observations");
 
     // obs[0] and obs[1] are in leg 0 (descends) -> psi < 0.
@@ -413,7 +413,7 @@ fn spiral_heading_at_t0_is_tangent() {
     let dt_obs_s = 1.0;
     let seed = 1;
 
-    let obs = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, seed);
+    let obs = generate_curved_track(&traj, speed, duration_s, dt_obs_s, obs_cov, seed, &ttc());
     let expected = (10.0_f64).atan2(5.0);
     assert!(
         (obs[0].psi - expected).abs() < 1e-6,
