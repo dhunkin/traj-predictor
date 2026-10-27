@@ -71,6 +71,7 @@ const inputs = {
   seed: 'seed', v_min: 'v_min', v_max: 'v_max', a_lat: 'a_lat', a_long: 'a_long', omega_cap: 'omega_cap',
   horizon_s: 'horizon_s', duration_s: 'duration_s', n_samples: 'n_samples',
   p_turn: 'p_turn', speed_noise_mps: 'speed_noise_mps', azimuth_bins: 'azimuth_bins', sim_speed: 'sim_speed',
+  intent_hypothesis_prob: 'intent_hypothesis_prob', // <-- ADD THIS
 };
 function val(id) { return parseFloat(el(inputs[id]).value); }
 function status(msg) { el('status').textContent = msg; }
@@ -431,6 +432,11 @@ async function predict() {
     const azimuthBins = Math.round(val('azimuth_bins'));
     const t0 = performance.now();
 
+    // Read OOIs safely so a missing element can't crash Predict.
+    const ooiX = el('ooi_x') ? Number(el('ooi_x').value) : 0;
+    const ooiY = el('ooi_y') ? Number(el('ooi_y').value) : 0;
+    const currentOois = [{ x: ooiX, y: ooiY }];
+
     // Stage 2: send the full observations array as `track`. The server runs
     // the Kalman filter over it and feeds the smoothed state to predict().
     // `last_observation` is kept as the last point for backward compat.
@@ -456,7 +462,7 @@ async function predict() {
         cov_xy: last.cov_xy,
         cov_yy: last.cov_yy,
       },
-      oois: [{ x: Number(el('ooi_x').value), y: Number(el('ooi_y').value) }],
+      oois: currentOois,
       config: {
         horizon_s: val('horizon_s'),
         n_samples: val('n_samples'),
@@ -480,7 +486,7 @@ async function predict() {
     };
 
     // Keep the OOIs the backend used so draw() can render them.
-    oois = [{ x: Number(el('ooi_x').value), y: Number(el('ooi_y').value) }];
+    oois = currentOois;
 
     // Stats (radians -> degrees).
     el('s50').textContent = (pred.sector50 * 180 / Math.PI).toFixed(1);
