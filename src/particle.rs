@@ -44,6 +44,10 @@ pub struct Particle {
     pub psi: f64,
     pub omega: f64,
     pub is_turning: bool,
+    /// Stage 3 goal inference: index into `oois` if this particle drew a goal
+    /// hypothesis, else `None`. Goal-assigned particles steer their prediction
+    /// fan toward `oois[goal]` (see the prediction loop).
+    pub goal: Option<usize>,
     pub weight: f64,
 }
 
@@ -123,7 +127,6 @@ pub fn predict(
     oois: &[Ooi],
     cfg: &PredictConfig,
 ) -> Prediction {
-    let _ = oois; // Stage 2: OOIs are an extension point, not yet used for inference.
     let n_samples = cfg.n_samples as usize;
     let n_bins = cfg.azimuth_bins as usize;
 
@@ -134,16 +137,18 @@ pub fn predict(
 
     // ---- 1. INITIALIZATION -------------------------------------------------
     // Sample initial position from track[0]'s covariance; velocity uniform in
-    // [v_min, v_max]; heading uniform in [0, 2*pi); turn rate zero. Weights are
-    // stored in the log domain.
+    // [v_min, v_max]; heading anchored near the track direction; turn rate
+    // zero. Weights are stored in the log domain.
     let mut particles: Vec<Particle> = Vec::with_capacity(n_samples);
     let cov_factor = Mat2::from_cov(track[0].cov);
-    // Estimate the initial heading from the first two observations so particles
-    // start clustered around the true track direction instead of spread over
-    // all of [0, 2*pi) (which was too broad and hurt convergence).
+    // Base heading from the first two observations. Every particle starts near
+    // this direction (Stage 3 fix: the old code started psi uniform over
+    // [0, 2*pi), which let the fan point in random directions — e.g. a sine
+    // track's true -45 deg heading — because nothing anchored the initial
+    // heading).
     let dx = track[1].pos[0] - track[0].pos[0];
     let dy = track[1].pos[1] - track[0].pos[1];
-    let psi_init = dy.atan2(dx);
+    let base_psi = dy.atan2(dx);
     for _ in 0..n_samples {
         let noise = cov_factor.sample(&mut rng);
         let pos = [
@@ -151,7 +156,24 @@ pub fn predict(
             track[0].pos[1] + noise.y,
         ];
         let v = ttc.v_min + (ttc.v_max - ttc.v_min) * rng.next_f64();
-        let psi = psi_init + rng.gauss(0.0, 0.5); // std dev ~30 degrees
+        // 1. ALWAYS start near the base heading (std ~0.3 rad ~ 17 deg), never
+        //    uniform over the full circle.
+        let mut goal = None;
+        let mut psi = base_psi + rng.gauss(0.0, 0.3);
+        // 2. Stage 3 goal inference: with probability
+        //    `intent_hypothesis_prob` a particle draws a goal hypothesis from
+        //    `oois` and its initial heading is biased toward that goal instead.
+        //    If `oois` is empty (or the draw misses) the particle stays on the
+        //    base heading — psi is never left uniform over the full circle.
+        if !oois.is_empty() && rng.next_f64() < cfg.intent_hypothesis_prob {
+            let g_idx = (rng.next_f64() * oois.len() as f64) as usize % oois.len();
+            goal = Some(g_idx);
+            // Bias the initial heading toward the goal (mix base + goal heading).
+            let gx = oois[g_idx].pos[0] - track[0].pos[0];
+            let gy = oois[g_idx].pos[1] - track[0].pos[1];
+            let goal_psi = gy.atan2(gx);
+            psi = goal_psi + rng.gauss(0.0, 0.5);
+        }
         // 20% of particles start in coordinated-turn mode so the filter can
         // track sustained maneuvers (spirals / orbits) as well as decaying turns.
         let is_turning = rng.next_f64() < 0.2;
@@ -169,9 +191,15 @@ pub fn predict(
             psi,
             omega,
             is_turning,
+            goal,
             weight: (1.0 / n_samples as f64).ln(),
         });
     }
+
+    // ---- STEP 3: debug goal counts -----------------------------------------
+    // ~80% of particles should have drawn a goal hypothesis (intent_hypothesis_prob).
+    let with_goal = particles.iter().filter(|p| p.goal.is_some()).count();
+    println!("DEBUG: Particles with goal: {} / {}", with_goal, n_samples);
 
     // ---- 2. FILTERING LOOP (track[1..]) ------------------------------------
     for i in 1..track.len() {
@@ -191,6 +219,7 @@ pub fn predict(
                 0.05, // tighter motion noise: trust the radar more
                 p.is_turning,
                 false, // filter phase: keep the filtered rate with tiny drift
+                None,  // filter phase: no forced rate — OU dynamics run as before
                 &mut rng,
                 ttc,
             );
@@ -314,6 +343,11 @@ pub fn predict(
         let mut v = p.v;
         let mut psi = psi_est;
 
+        // Stage 3 goal inference: goal-assigned particles steer their fan toward
+        // their OOI by forcing the turn rate each step so the arc curves toward
+        // the goal. Non-goal particles keep the OU baseline (forced_omega = None).
+        let goal_info: Option<(usize, [f64; 2])> = p.goal.map(|g| (g, oois[g].pos));
+
         let mut time = 0.0;
         let n_steps = (cfg.horizon_s / 0.5).ceil() as usize;
         // Sample the full per-particle trajectory so the demo can draw the
@@ -342,6 +376,22 @@ pub fn predict(
             if p.is_turning {
                 v *= 0.995;
             }
+            // Goal-steering (Stage 3): for a goal-assigned particle, force the
+            // turn rate each step so the arc curves toward its OOI. Compute the
+            // heading from the particle's current position to the goal and turn
+            // toward it (proportional: remaining angle per step, clamped to the
+            // turn-table limit inside propagate_step). Non-goal particles pass
+            // None so the OU baseline runs exactly as before.
+            let forced = match goal_info {
+                Some((_g, gp)) => {
+                    let gx = gp[0] - pos[0];
+                    let gy = gp[1] - pos[1];
+                    let psi_target = gy.atan2(gx);
+                    let dpsi = ((psi_target - psi + PI).rem_euclid(2.0 * PI)) - PI;
+                    Some(dpsi / dt_step)
+                }
+                None => None,
+            };
             let (pos_new, psi_new, v_new, omega_new) = propagate_step(
                 pos,
                 v,
@@ -352,6 +402,7 @@ pub fn predict(
                 fan_sigma,
                 p.is_turning,
                 true, // prediction phase: hold omega exactly, no random walk
+                forced,
                 &mut rng,
                 ttc,
             );

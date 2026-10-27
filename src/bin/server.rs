@@ -86,6 +86,7 @@ struct PredictConfigDto {
     p_turn: f64,
     azimuth_bins: u32,
     speed_noise_mps: f64,
+    intent_hypothesis_prob: f64,
     seed: u64,
 }
 
@@ -184,6 +185,7 @@ async fn predict_handler(Json(req): Json<PredictRequestDto>) -> Result<Json<Pred
         p_turn: req.config.p_turn,
         azimuth_bins: req.config.azimuth_bins,
         speed_noise_mps: req.config.speed_noise_mps,
+        intent_hypothesis_prob: req.config.intent_hypothesis_prob,
         seed: req.config.seed,
     };
 

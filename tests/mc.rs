@@ -22,6 +22,7 @@ fn cfg(n_samples: u32, p_turn: f64, seed: u64, azimuth_bins: u32) -> PredictConf
         p_turn,
         azimuth_bins,
         speed_noise_mps: 0.0,
+        intent_hypothesis_prob: 0.8,
         seed,
     }
 }

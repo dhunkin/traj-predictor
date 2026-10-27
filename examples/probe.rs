@@ -37,7 +37,7 @@ fn main() {
     let dx = last.pos[0]-px; let dy = last.pos[1]-py; let dt = (last.t-pt).abs();
     last.psi = dy.atan2(dx); last.v = if dt>0.0 { (dx*dx+dy*dy).sqrt()/dt } else { 0.0 };
     let t = Ttc { v_min: 2.0, v_max: 8.0, a_lat: 9.0, a_long: 3.0, omega_cap: 1.0 };
-    let c = PredictConfig { horizon_s, n_samples, dt_s, p_turn, azimuth_bins, speed_noise_mps: speed_noise, seed };
+    let c = PredictConfig { horizon_s, n_samples, dt_s, p_turn, azimuth_bins, speed_noise_mps: speed_noise, intent_hypothesis_prob: 0.8, seed };
     let p = predict(&observations, &t, &oois, &c);
     eprintln!("PROBE nz-ish s50={} s90={}", p.sector50, p.sector90);
 }

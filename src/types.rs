@@ -38,6 +38,11 @@ pub struct PredictConfig {
     pub p_turn: f64,
     pub azimuth_bins: u32,
     pub speed_noise_mps: f64,
+    /// Stage 3: probability a particle draws a goal hypothesis from `oois` at
+    /// initialization. 0 disables goal inference (every particle stays on the
+    /// OU baseline); ~0.8 keeps most particles anchored to a goal so the fan
+    /// narrows toward it.
+    pub intent_hypothesis_prob: f64,
     pub seed: u64,
 }
 

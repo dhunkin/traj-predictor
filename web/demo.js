@@ -79,6 +79,9 @@ function status(msg) { el('status').textContent = msg; }
 let observations = []; // {t, x, y, cov_xx, cov_xy, cov_yy, v, psi}
 let true_future = []; // the analytic truth past duration_s (for the dashed line)
 let pred = null;
+// OOIs (observable objective intent states) rendered + sent to the backend.
+// Updated by predict(); consumed by draw() to render the red circles.
+let oois = [];
 // Last observation, hoisted to module scope so predict() can use it
 // regardless of handler scope (fixes "last is not defined" on Predict).
 let lastObservation = null;
@@ -124,6 +127,21 @@ function draw() {
 
   if (!lastObservation) return;
   const last = lastObservation;
+
+  // OOIs: render the goal points the backend used as large red circles so we
+  // can see where the prediction fan is being steered toward.
+  if (oois && oois.length > 0) {
+    for (const o of oois) {
+      const [px, py] = metersToScreen(o.x, o.y);
+      ctx.beginPath();
+      ctx.fillStyle = 'red';
+      ctx.arc(px, py, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'white';
+      ctx.font = '12px sans-serif';
+      ctx.fillText('OOI', px + 10, py + 5);
+    }
+  }
 
   // True Future: the analytic truth past duration_s, drawn as a dashed black
   // line from the last observation to the end of truth. Drawn first so the fan
@@ -438,7 +456,7 @@ async function predict() {
         cov_xy: last.cov_xy,
         cov_yy: last.cov_yy,
       },
-      oois: [],
+      oois: [{ x: Number(el('ooi_x').value), y: Number(el('ooi_y').value) }],
       config: {
         horizon_s: val('horizon_s'),
         n_samples: val('n_samples'),
@@ -446,6 +464,7 @@ async function predict() {
         p_turn: val('p_turn'),
         azimuth_bins: azimuthBins,
         speed_noise_mps: val('speed_noise_mps'),
+        intent_hypothesis_prob: val('intent_hypothesis_prob'),
         seed: Number(val('seed') | 0),
       },
     });
@@ -459,6 +478,9 @@ async function predict() {
       sector50: res.sector50,
       sector90: res.sector90,
     };
+
+    // Keep the OOIs the backend used so draw() can render them.
+    oois = [{ x: Number(el('ooi_x').value), y: Number(el('ooi_y').value) }];
 
     // Stats (radians -> degrees).
     el('s50').textContent = (pred.sector50 * 180 / Math.PI).toFixed(1);

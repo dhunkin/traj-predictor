@@ -67,9 +67,17 @@ pub fn propagate(
 ///     with only a tiny `0.01` random-walk drift, so the filtered rate is
 ///     preserved across steps.
 ///   - `true` (prediction phase): the turning particle holds omega EXACTLY
-///     (`omega_new = omega`, no random walk). The fan spread comes from the
-///     different filtered omega each particle carries, not from adding fresh
-///     noise that would scramble the arc into a chaotic scribble.
+///     (`omega_new = omega`, no random walk). The fan spread comes from
+///     the different filtered omega each particle carries, not from adding
+///     fresh noise that would scramble the arc into a chaotic scribble.
+///
+/// `forced_omega` overrides the turn-rate update entirely:
+///   - `None` -> the turn-rate update runs exactly as above (OU mean-revert to
+///     zero for non-turning particles; held/weak-drift for turning particles).
+///   - `Some(w)` -> `omega_new = w` is used verbatim (clamped to the
+///     speed-dependent limit afterwards), so the particle is steered along a
+///     prescribed arc. Used by Stage 3 goal inference to aim a goal-assigned
+///     particle's fan at its OOI.
 ///
 /// Returns `(pos_new, psi_new, v_new, omega_new)`:
 ///   1. `v` is perturbed by longitudinal Gaussian noise (scaled by `sqrt(dt)`)
@@ -90,6 +98,7 @@ pub fn propagate_step(
     turn_noise_sigma: f64,
     is_turning: bool,
     predicting: bool,
+    forced_omega: Option<f64>,
     rng: &mut Xoshiro256ss,
     ttc: &Ttc,
 ) -> ([f64; 2], f64, f64, f64) {
@@ -97,22 +106,14 @@ pub fn propagate_step(
     let v_noise = rng.gauss(0.0, speed_noise) * dt.sqrt();
     let v_new = (v + v_noise).clamp(ttc.v_min, ttc.v_max);
 
-    // 2. Update omega. Two turn-rate dynamics, selected by `is_turning`:
-    //
-    //   - `true` (coordinated turn): the turn-rate holds its current value.
-    //     In the filter phase a tiny `0.01` random-walk drift is kept so the
-    //     filtered rate survives; in the prediction phase omega is held EXACTLY
-    //     (`omega_new = omega`) so the fan arc stays coherent — the spread that
-    //     matters comes from each particle's own filtered omega, not from fresh
-    //     noise (STEP 2). The caller-supplied `turn_noise_sigma` is deliberately
-    //     NOT used here: the filter's own turn_noise would either decay the
-    //     rate (mean reversion) or spread it too wide, killing the curl.
-    //
-    //   - `false` (straight): the OU process mean-reverts to zero (a turn that
-    //     decays), with stationary std-dev `turn_noise_sigma` and mean-reversion
-    //     time `tau`.
+    // 2. Update omega. If the caller supplied a forced rate, use it verbatim
+    //    (clamped below) and skip the OU / held dynamics entirely — this is the
+    //    Stage 3 goal-steering path. Otherwise the OU process runs exactly as
+    //    before, so the baseline is preserved when `forced_omega` is `None`.
     let mut omega_new;
-    if is_turning {
+    if let Some(w) = forced_omega {
+        omega_new = w;
+    } else if is_turning {
         if predicting {
             // Prediction phase: hold omega exactly, no random walk.
             omega_new = omega;

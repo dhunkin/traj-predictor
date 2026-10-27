@@ -154,6 +154,7 @@ fn parse_scenario(path: &str) -> (Ttc, Vec<Observation>, Vec<Ooi>, PredictConfig
                     p_turn,
                     azimuth_bins,
                     speed_noise_mps: speed_noise,
+                    intent_hypothesis_prob: 0.8,
                     seed,
                 });
             }
