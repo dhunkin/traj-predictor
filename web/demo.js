@@ -71,7 +71,7 @@ const inputs = {
   seed: 'seed', v_min: 'v_min', v_max: 'v_max', a_lat: 'a_lat', a_long: 'a_long', omega_cap: 'omega_cap',
   horizon_s: 'horizon_s', duration_s: 'duration_s', n_samples: 'n_samples',
   p_turn: 'p_turn', speed_noise_mps: 'speed_noise_mps', azimuth_bins: 'azimuth_bins', sim_speed: 'sim_speed',
-  intent_hypothesis_prob: 'intent_hypothesis_prob', // <-- ADD THIS
+  intent_hypothesis_prob: 'intent_hypothesis_prob',
 };
 function val(id) { return parseFloat(el(inputs[id]).value); }
 function status(msg) { el('status').textContent = msg; }
@@ -80,9 +80,14 @@ function status(msg) { el('status').textContent = msg; }
 let observations = []; // {t, x, y, cov_xx, cov_xy, cov_yy, v, psi}
 let true_future = []; // the analytic truth past duration_s (for the dashed line)
 let pred = null;
-// OOIs (observable objective intent states) rendered + sent to the backend.
-// Updated by predict(); consumed by draw() to render the red circles.
-let oois = [];
+// OOIs (objects of interest), read live from the OOI inputs so the red
+// circle is visible as soon as a track is simulated (and follows edits).
+function currentOois() {
+  const x = Number(el('ooi_x').value);
+  const y = Number(el('ooi_y').value);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return [];
+  return [{ x, y }];
+}
 // Last observation, hoisted to module scope so predict() can use it
 // regardless of handler scope (fixes "last is not defined" on Predict).
 let lastObservation = null;
@@ -131,15 +136,16 @@ function draw() {
 
   // OOIs: render the goal points the backend used as large red circles so we
   // can see where the prediction fan is being steered toward.
-  if (oois && oois.length > 0) {
+  const oois = currentOois();
+  if (oois.length > 0) {
     for (const o of oois) {
       const [px, py] = metersToScreen(o.x, o.y);
       ctx.beginPath();
       ctx.fillStyle = 'red';
       ctx.arc(px, py, 8, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = 'white';
-      ctx.font = '12px sans-serif';
+      ctx.fillStyle = '#b00';
+      ctx.font = 'bold 12px sans-serif';
       ctx.fillText('OOI', px + 10, py + 5);
     }
   }
@@ -179,7 +185,7 @@ function draw() {
   // particle) with higher alpha so the distinct curved lines are visible
   // instead of a solid cone. Drawn below the fan so the fan colors show.
   if (showRibbon && pred && pred.path_cloud) {
-    drawPathRibbon(pred.path_cloud, showCloud);
+    drawPathRibbon(pred.path_cloud, pred.path_goal);
   }
 
   if (!pred) return;
@@ -192,9 +198,7 @@ function draw() {
   const binProbs = pred.bin_probs;
   const azimuthBins = val('azimuth_bins');
   const binWidth = (2 * Math.PI) / azimuthBins;
-  const vMean = (val('v_min') + val('v_max')) / 2;
-  const horizon = val('horizon_s');
-  const length = horizon * vMean;
+  const length = fanLength();
 
   let maxP = 0;
   for (const p of binProbs) if (p > maxP) maxP = p;
@@ -233,23 +237,29 @@ function draw() {
   }
   ctx.restore();
 
-  // Sector contours: 50% and 90% as solid bright radial lines.
-  const mean = pred.final_heading_mean;
-  drawSectorContour(ax, ay, mean, pred.sector50, '#00ff00', last);
-  drawSectorContour(ax, ay, mean, pred.sector90, '#ff00ff', last);
+  // Sector contours: 50% and 90% as solid bright radial lines. The backend
+  // returns each sector's start angle, so the lines bound the sector it
+  // actually found (centring on the mean is wrong for a two-mode fan).
+  drawSectorContour(ax, ay, pred.sector50_start, pred.sector50, '#00ff00', last);
+  drawSectorContour(ax, ay, pred.sector90_start, pred.sector90, '#ff00ff', last);
 }
 
-function drawSectorContour(ax, ay, mean, width, color, last) {
-  const vMean = (val('v_min') + val('v_max')) / 2;
-  const horizon = val('horizon_s');
-  const length = horizon * vMean;
-  const half = width / 2;
+// Radial length (m) of the fan and sector lines: the filtered speed times
+// the horizon, falling back to the mid speed before the first prediction.
+function fanLength() {
+  const v = pred && Number.isFinite(pred.v_est) && pred.v_est > 0
+    ? pred.v_est : (val('v_min') + val('v_max')) / 2;
+  return val('horizon_s') * v;
+}
+
+function drawSectorContour(ax, ay, start, width, color, last) {
+  const length = fanLength();
   const [x0, y0] = metersToScreen(
-    last.x + length * Math.cos(mean - half),
-    last.y + length * Math.sin(mean - half));
+    last.x + length * Math.cos(start),
+    last.y + length * Math.sin(start));
   const [x1, y1] = metersToScreen(
-    last.x + length * Math.cos(mean + half),
-    last.y + length * Math.sin(mean + half));
+    last.x + length * Math.cos(start + width),
+    last.y + length * Math.sin(start + width));
   ctx.strokeStyle = color;
   ctx.lineWidth = 3;
   ctx.beginPath();
@@ -261,19 +271,21 @@ function drawSectorContour(ax, ay, mean, width, color, last) {
 }
 
 // Draw the trajectory ribbon: a subset of per-particle polylines so the
-// distinct curved lines show instead of a solid cone. Every Nth particle is
-// drawn with a higher alpha so the lines stand out against the point cloud.
-function drawPathRibbon(path_cloud, showCloud) {
+// distinct curved lines show instead of a solid cone. Paths of particles that
+// carry a goal hypothesis are red, goal-free ones dark grey, so you can see
+// which hypothesis each branch of the fan comes from.
+function drawPathRibbon(path_cloud, path_goal) {
   if (!path_cloud || path_cloud.length === 0) return;
   // Draw every Nth particle; fewer lines for large particle counts.
   const n = path_cloud.length;
-  const step = n > 2000 ? 100 : n > 1000 ? 50 : 25;
+  const step = n > 4000 ? 40 : n > 1000 ? 20 : 10;
   ctx.save();
   ctx.lineWidth = 1.5;
-  ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
   for (let i = 0; i < n; i += step) {
     const path = path_cloud[i];
     if (!path || path.length < 2) continue;
+    const hasGoal = path_goal && path_goal[i] >= 0;
+    ctx.strokeStyle = hasGoal ? 'rgba(200, 0, 0, 0.45)' : 'rgba(0, 0, 0, 0.3)';
     ctx.beginPath();
     for (let j = 0; j < path.length; j++) {
       const [px, py] = metersToScreen(path[j][0], path[j][1]);
@@ -295,6 +307,12 @@ const TRAJ_DEFS = {
     { id: 'traj-r0', label: 'r0', value: 10 },
     { id: 'traj-r-growth', label: 'r_growth', value: 1 },
     { id: 'traj-turns', label: 'turns', value: 3 },
+  ]},
+  orbit: { fields: [
+    { id: 'traj-radius', label: 'radius (m)', value: 20 },
+    { id: 'traj-omega', label: 'omega (rad/s)', value: 0.4 },
+    { id: 'traj-drift', label: 'drift (m/s)', value: 0.6 },
+    { id: 'traj-drift-dir', label: 'drift dir (rad)', value: 0 },
   ]},
   sine: { fields: [
     { id: 'traj-wavelength', label: 'wavelength', value: 100 },
@@ -358,6 +376,9 @@ async function simulate() {
       case 'spiral':
         params = [gp('traj-r0'), gp('traj-r-growth'), gp('traj-turns')];
         break;
+      case 'orbit':
+        params = [gp('traj-radius'), gp('traj-omega'), gp('traj-drift'), gp('traj-drift-dir')];
+        break;
       case 'sine':
         params = [gp('traj-wavelength'), gp('traj-amplitude'), gp('traj-direction')];
         break;
@@ -408,6 +429,7 @@ async function simulate() {
       const fanLen = val('horizon_s') * vMean;
       const last = lastObservation;
       const pts = observations.map(o => metersToLngLat(o.x, o.y));
+      for (const o of currentOois()) pts.push(metersToLngLat(o.x, o.y));
       pts.push(
         metersToLngLat(last.x + fanLen, last.y),
         metersToLngLat(last.x - fanLen, last.y),
@@ -432,13 +454,10 @@ async function predict() {
     const azimuthBins = Math.round(val('azimuth_bins'));
     const t0 = performance.now();
 
-    // Read OOIs safely so a missing element can't crash Predict.
-    const ooiX = el('ooi_x') ? Number(el('ooi_x').value) : 0;
-    const ooiY = el('ooi_y') ? Number(el('ooi_y').value) : 0;
-    const currentOois = [{ x: ooiX, y: ooiY }];
+    const oois = currentOois();
 
-    // Stage 2: send the full observations array as `track`. The server runs
-    // the Kalman filter over it and feeds the smoothed state to predict().
+    // Send the full observation track; the server runs the particle filter
+    // over it (positions + covariances only) and fans forward from the result.
     // `last_observation` is kept as the last point for backward compat.
     const res = await apiPost('/api/predict', {
       ttc: {
@@ -462,7 +481,7 @@ async function predict() {
         cov_xy: last.cov_xy,
         cov_yy: last.cov_yy,
       },
-      oois: currentOois,
+      oois,
       config: {
         horizon_s: val('horizon_s'),
         n_samples: val('n_samples'),
@@ -480,19 +499,25 @@ async function predict() {
       bin_probs: res.bin_probs,
       point_cloud: res.point_cloud,
       path_cloud: res.path_cloud, // [[ [x,y], ... ], ...] one polyline per particle
+      path_goal: res.path_goal, // per path: OOI index, or -1 for no goal
       final_heading_mean: res.heading_mean,
       sector50: res.sector50,
       sector90: res.sector90,
+      sector50_start: res.sector50_start,
+      sector90_start: res.sector90_start,
+      v_est: res.v_est,
     };
-
-    // Keep the OOIs the backend used so draw() can render them.
-    oois = currentOois;
 
     // Stats (radians -> degrees).
     el('s50').textContent = (pred.sector50 * 180 / Math.PI).toFixed(1);
     el('s90').textContent = (pred.sector90 * 180 / Math.PI).toFixed(1);
     el('smean').textContent = (pred.final_heading_mean * 180 / Math.PI).toFixed(1);
     el('selapsed').textContent = Math.round(performance.now() - t0);
+    // Posterior intent: if this does not move with the data, inference is broken.
+    const pGoal = res.goal_probs.reduce((a, p) => a + p, 0);
+    el('sgoal').textContent = oois.length ? pGoal.toFixed(2) : '—';
+    el('sturn').textContent = res.turn_prob.toFixed(2);
+    el('svest').textContent = res.v_est.toFixed(1);
     // FIX 4c: n_bins_nonzero stat.
     const nz = pred.bin_probs.reduce((a, p) => a + (p > 0 ? 1 : 0), 0);
     el('snz').textContent = nz;
@@ -517,6 +542,8 @@ function wireButtons() {
   // Populate trajectory parameter inputs on load and when the selector changes.
   populateTrajParams();
   el('traj-type').addEventListener('change', populateTrajParams);
+  el('ooi_x').addEventListener('input', draw);
+  el('ooi_y').addEventListener('input', draw);
   status('Ready.');
 }
 map.on('load', wireButtons);

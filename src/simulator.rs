@@ -29,6 +29,16 @@ pub enum Trajectory {
         amplitude_m: f64,
         direction: f64,
     },
+    /// Orbit: circle of `radius_m` flown at turn rate `omega` (rad/s, + = CCW)
+    /// whose centre drifts at `drift_mps` along `drift_dir` (radians). Starts
+    /// at the origin heading +x (circle centre at `[0, radius_m]` for CCW).
+    /// `drift_mps = 0` is a loiter in place.
+    Orbit {
+        radius_m: f64,
+        omega: f64,
+        drift_mps: f64,
+        drift_dir: f64,
+    },
     /// Zigzag: legs of length `segment_m`, each tilted `angle_rad` from +x
     /// (alternating +angle / -angle), offset by `baseline_m` from +x.
     Zigzag {
@@ -184,6 +194,25 @@ pub fn sample_point(
             let heading = dydt.atan2(dxdt);
             let sp = (dxdt * dxdt + dydt * dydt).sqrt();
             (pos, heading, sp)
+        }
+        Trajectory::Orbit {
+            radius_m,
+            omega,
+            drift_mps,
+            drift_dir,
+        } => {
+            let sign = if *omega < 0.0 { -1.0 } else { 1.0 };
+            // Angle of the UAV around the centre; -pi/2 (CCW) puts it below the
+            // centre, i.e. at the origin heading +x.
+            let th = omega * t - sign * std::f64::consts::FRAC_PI_2;
+            let (dcx, dcy) = (drift_mps * drift_dir.cos(), drift_mps * drift_dir.sin());
+            let pos = [
+                dcx * t + radius_m * th.cos(),
+                sign * radius_m + dcy * t + radius_m * th.sin(),
+            ];
+            let dxdt = dcx - radius_m * omega * th.sin();
+            let dydt = dcy + radius_m * omega * th.cos();
+            (pos, dydt.atan2(dxdt), (dxdt * dxdt + dydt * dydt).sqrt())
         }
         Trajectory::Zigzag {
             segment_m,

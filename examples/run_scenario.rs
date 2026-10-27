@@ -248,6 +248,7 @@ fn main() {
             Trajectory::Spiral { .. } => "spiral",
             Trajectory::Sine { .. } => "sine",
             Trajectory::Zigzag { .. } => "zigzag",
+            Trajectory::Orbit { .. } => "orbit",
         };
         obs_info = format!(
             "\n# trajectory = {kind}, duration_s = {duration_s:.1}, obs = {n}\n# last obs: x = {x:.3}, y = {y:.3}, v = {v:.3}, psi = {psi:.2} deg",

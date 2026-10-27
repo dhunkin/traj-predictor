@@ -109,7 +109,17 @@ struct PredictRequestDto {
 struct PredictResponseDto {
     sector50: f64,
     sector90: f64,
+    /// Start angles (rad) of the 50% / 90% sectors; each spans
+    /// [start, start + width] counter-clockwise.
+    sector50_start: f64,
+    sector90_start: f64,
     heading_mean: f64,
+    /// Posterior P(goal = oois[k] | track), one entry per OOI.
+    goal_probs: Vec<f64>,
+    /// Posterior probability of the coordinated-turn mode.
+    turn_prob: f64,
+    v_est: f64,
+    omega_est: f64,
     bin_centers: Vec<f64>,
     bin_probs: Vec<f64>,
     point_cloud: Vec<f64>, // flattened [x0, y0, x1, y1, ...]
@@ -117,6 +127,8 @@ struct PredictResponseDto {
     /// [x0, y0, x1, y1, ...] array. Lets the demo draw the ribbon as distinct
     /// curved lines instead of a single straight sector.
     path_cloud: Vec<Vec<[f64; 2]>>,
+    /// Goal label of each path in `path_cloud`: OOI index, or -1 for no goal.
+    path_goal: Vec<i32>,
     n_bins_nonzero: usize,
 }
 
@@ -190,6 +202,12 @@ async fn predict_handler(Json(req): Json<PredictRequestDto>) -> Result<Json<Pred
     };
 
     // Call the core Monte-Carlo engine with the full track.
+    if track.len() < 2 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "track needs at least 2 observations".to_string(),
+        ));
+    }
     let prediction = predict(&track, &ttc, &oois, &cfg);
 
     // Map result back to the response DTO.
@@ -203,11 +221,22 @@ async fn predict_handler(Json(req): Json<PredictRequestDto>) -> Result<Json<Pred
     let resp = PredictResponseDto {
         sector50: prediction.sector50,
         sector90: prediction.sector90,
+        sector50_start: prediction.sector50_start,
+        sector90_start: prediction.sector90_start,
         heading_mean: prediction.final_heading_mean,
+        goal_probs: prediction.goal_probs,
+        turn_prob: prediction.turn_prob,
+        v_est: prediction.v_est,
+        omega_est: prediction.omega_est,
         bin_centers: prediction.bin_centers,
         bin_probs: prediction.bin_probs,
         point_cloud,
         path_cloud: prediction.path_cloud,
+        path_goal: prediction
+            .path_goal
+            .iter()
+            .map(|g| g.map_or(-1, |i| i as i32))
+            .collect(),
         n_bins_nonzero,
     };
 
@@ -245,6 +274,12 @@ async fn simulate_handler(Json(req): Json<SimulateRequestDto>) -> Result<Json<Si
             wavelength_m: get(0, "wavelength_m")?,
             amplitude_m: get(1, "amplitude_m")?,
             direction: get(2, "direction")?,
+        },
+        "orbit" => Trajectory::Orbit {
+            radius_m: get(0, "radius_m")?,
+            omega: get(1, "omega")?,
+            drift_mps: get(2, "drift_mps")?,
+            drift_dir: get(3, "drift_dir")?,
         },
         "zigzag" => Trajectory::Zigzag {
             segment_m: get(0, "segment_m")?,

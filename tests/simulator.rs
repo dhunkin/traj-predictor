@@ -422,3 +422,18 @@ fn spiral_heading_at_t0_is_tangent() {
         expected
     );
 }
+
+#[test]
+fn orbit_starts_at_origin_heading_x_and_drifts() {
+    use predictor::simulator::sample_point;
+    let traj = Trajectory::Orbit { radius_m: 20.0, omega: 0.4, drift_mps: 0.6, drift_dir: 0.0 };
+    let (p0, psi0, v0) = sample_point(&traj, 0.0, 60.0, 0.0);
+    assert!(p0[0].abs() < 1e-9 && p0[1].abs() < 1e-9, "start = {:?}", p0);
+    assert!(psi0.abs() < 1e-9, "heading at t=0 = {}", psi0);
+    assert!((v0 - (8.0 + 0.6)).abs() < 1e-9, "speed at t=0 = {}", v0);
+    // After one full loop the UAV is back at the bottom of the circle, shifted
+    // by the drift.
+    let period = 2.0 * std::f64::consts::PI / 0.4;
+    let (p1, _, _) = sample_point(&traj, period, 60.0, 0.0);
+    assert!((p1[0] - 0.6 * period).abs() < 1e-6 && p1[1].abs() < 1e-6, "after a loop = {:?}", p1);
+}

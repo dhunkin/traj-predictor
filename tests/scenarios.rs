@@ -122,21 +122,19 @@ fn sample_bin(bin_probs: &[f64], rng: &mut Xoshiro256ss) -> usize {
 
 #[test]
 fn straight_1_ooi_no_noise() {
-    // Zero sensor noise (cov = [0,0,0]) and zero speed noise. The heading term
-    // in the likelihood (psi_obs) now constrains the particle heading, so the
-    // post-filter fan is anchored near ground truth (psi = 0); the 90% sector is
-    // much tighter than the old position-only filter (~125-140 deg vs ~200+).
+    // Zero sensor noise (cov = [0,0,0]) and zero speed noise. The sequence of
+    // positions alone pins the heading, so the post-filter fan points near
+    // ground truth (psi = 0) without any heading measurement.
     let track = straight_track(20.0, 0.0, [0.0, 0.0, 0.0], 6, 1.0, 5.0);
     let t = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 1.0);
     let c = cfg(10.0, 10000, 0.0, 72, 42, 0.0);
     let prediction = predict(&track, &t, &[], &c);
 
     let sector90_deg = prediction.sector90 * 180.0 / PI;
-    // Tight (heading term anchors psi) but not a full circle. With the corrected
-    // heading term the fan points toward ground truth; s90 ~60 deg.
+    // Tight but not a full circle.
     assert!(
         sector90_deg > 20.0 && sector90_deg < 120.0,
-        "sector90_deg = {}, expected ~60 (heading term), < 120",
+        "sector90_deg = {}, expected 20..120",
         sector90_deg
     );
 
@@ -147,15 +145,13 @@ fn straight_1_ooi_no_noise() {
         "ground truth not inside the 90% sector"
     );
 
-    // Mean heading near ground truth. The is_turning particles (20% hypothesis
-    // of a maneuver) curl the weighted circular mean slightly off 0; the heading
-    // term keeps this small across seeds (measured |mean| < 7 deg).
+    // Mean heading near ground truth (turn-mode particles curl it slightly).
     let h = if prediction.final_heading_mean > PI {
         prediction.final_heading_mean - 2.0 * PI
     } else {
         prediction.final_heading_mean
     };
-    assert!(h.abs() < 15.0, "mean_heading_deg = {}, expected near 0 (±15 for is_turning curl)", h * 180.0 / PI);
+    assert!(h.abs() < 15.0, "mean_heading_deg = {}, expected near 0 (±15 for turn-mode curl)", h * 180.0 / PI);
 }
 
 // ---------------------------------------------------------------------------
@@ -168,9 +164,11 @@ fn two_oois_between() {
     // learns the straight +X track, then fans forward with the OU turn-rate
     // model, producing a symmetric two-sided heading spread: both the + and -
     // heading regions carry significant probability mass.
+    // p_turn = 0.5: p_turn is the stationary share of the (always-turning)
+    // turn mode, so p_turn = 1 would forbid straight flight altogether.
     let track = straight_track(20.0, 0.0, [1.0, 0.0, 1.0], 6, 1.0, 5.0);
     let t = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 1.0);
-    let c = cfg(10.0, 20000, 1.0, 72, 7, 0.0);
+    let c = cfg(10.0, 20000, 0.5, 72, 7, 0.0);
     let prediction = predict(&track, &t, &[], &c);
 
     let n = prediction.bin_probs.len();
@@ -192,13 +190,12 @@ fn two_oois_between() {
         right > 0.01 && left > 0.01,
         "expected mass on both sides: right max = {right}, left max = {left}"
     );
-    // Two-sided spread around ground truth. With the corrected heading term the
-    // fan points toward psi=0 (ground truth) with a symmetric band; the 90%
-    // sector is ~60 deg (was expected > 90 under the buggy heading term).
+    // Two-sided spread around ground truth: the fan points toward psi = 0 with
+    // a symmetric band.
     let sector90_deg = prediction.sector90 * 180.0 / PI;
     assert!(
-        sector90_deg > 20.0 && sector90_deg < 120.0,
-        "sector90_deg = {}, expected ~60 (heading term anchors psi)",
+        sector90_deg > 20.0 && sector90_deg < 180.0,
+        "sector90_deg = {}, expected 20..180",
         sector90_deg
     );
 }
@@ -217,12 +214,8 @@ fn noisy_track_wide() {
     let c = cfg(10.0, 20000, 1.0, 72, 13, 0.0);
     let prediction = predict(&track, &t, &[], &c);
 
-    // Wide heading sector. The heading term tightens it relative to the old
-    // position-only filter (measured ~55 deg at seed 13, up to ~74 deg across
-    // seeds 0..=20), but with cov=[9,0,9] it stays well over a quarter circle.
-    // NOTE: with displacement-bearing binning (net direction of travel) instead
-    // of the final psi, the sector narrows — bearing s90 ~30 deg at seed 13,
-    // staying well above a single bin (~5 deg).
+    // Wide heading sector: with sigma = 3 m per axis the heading is only
+    // weakly determined by 6 positions.
     let sector90_deg = prediction.sector90 * 180.0 / PI;
     assert!(
         sector90_deg > 20.0,
@@ -244,26 +237,13 @@ fn noisy_track_wide() {
         max_dev
     );
 
-    // Ground truth still near the 90% sector. The heading term biases the
-    // distribution ~30 deg off ground truth at some seeds (with cov=[9,0,9] the
-    // heading is weakly constrained, so the fan can point a few bins off the
-    // true heading); bin 0 is inside the 90% window at ~6/41 seeds and inside
-    // the 95% window at ~12/41, but it always stays within 6 bins (~8 deg) of
-    // the extracted sector. So we assert proximity, not membership.
+    // Ground truth stays inside the 90% sector (the window may wrap the
+    // 0/2*pi seam, which `truth_in_sector` handles).
     let window = smallest_window(&prediction.bin_probs, 0.9, 72);
-    let (ws, ww) = window;
-    // distance (in bins) from ground-truth bin 0 to the nearest edge of the
-    // window [ws, ws+ww), handling the 0/2*pi seam wrap.
-    let end = (ws + ww) % 72;
-    let dist_to_bin0 = if ws == 0 {
-        0
-    } else {
-        (ws + (72 - end)).min(ws).min(end)
-    };
     assert!(
-        dist_to_bin0 <= 6,
-        "ground truth (bin 0) is {} bins from the 90% sector (start={},width={})",
-        dist_to_bin0, ws, ww
+        truth_in_sector(window, 72),
+        "ground truth not inside the 90% sector (start={}, width={})",
+        window.0, window.1
     );
 }
 
@@ -413,13 +393,8 @@ fn sector_mass_consistency_50() {
 #[test]
 fn reference_scenario_numbers() {
     // simple.txt: straight +X at v=5, psi=0, cov=[1,0,1], 5 observations.
-    // The particle filter learns the *position* from the whole track (reweighting
-    // by distance to each observation), so the final positions cluster near the
-    // true endpoint [20, 0]. The heading term (psi_obs) in the likelihood anchors
-    // the post-filter heading near ground truth (0); it is no longer spread over
-    // the full circle the way the old position-only filter left it. Measured at
-    // seed 42 (with the corrected signed heading term): s50 ~25 deg, s90 ~60 deg,
-    // |mean| ~1 deg, ~28 bins populated (the heading term concentrates the fan).
+    // The filter learns position, speed and heading from the positions alone
+    // (no heading measurement), so the fan points near ground truth (0).
     let track = straight_track(20.0, 0.0, [1.0, 0.0, 1.0], 5, 1.0, 5.0);
     let t = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 1.0);
     let c = cfg(10.0, 10000, 0.3, 72, 42, 0.5);
@@ -434,9 +409,7 @@ fn reference_scenario_numbers() {
         .filter(|&&p| p > 0.0)
         .count();
 
-    // The heading term anchors psi near ground truth, so the mean heading stays
-    // near 0 (the is_turning particles pull it only slightly). At seed 42 the
-    // mean is ~1 deg, so we assert it near 0.
+    // The mean heading stays near ground truth (0).
     let h = if heading_mean_deg > 180.0 {
         heading_mean_deg - 360.0
     } else {
@@ -444,27 +417,26 @@ fn reference_scenario_numbers() {
     };
     assert!(
         h.abs() < 15.0,
-        "heading_mean_deg = {}, expected ~0 (heading term anchors psi)",
+        "heading_mean_deg = {}, expected ~0",
         heading_mean_deg
     );
 
-    // Displacement-bearing binning (net direction of travel start -> horizon end)
-    // concentrates the fan more than the old psi-based histogram: the 50% sector
-    // is a tight band (~15 deg) and the 90% sector ~30 deg (vs the ~25/~60 deg of
-    // the old psi-based histogram). The is_turning particles still spread it a bit.
+    // Only 4 s of position data (no heading measurement) and a 30% turn-mode
+    // prior: the 50% sector is a modest band and the 90% sector clearly wider,
+    // but well short of a half circle.
     assert!(
-        (sector50_deg - 15.0).abs() < 12.0,
-        "sector50_deg = {}, expected ~15 (displacement bearing concentrates the fan)",
+        sector50_deg > 10.0 && sector50_deg < 60.0,
+        "sector50_deg = {}, expected a modest band (10..60)",
         sector50_deg
     );
     assert!(
-        (sector90_deg - 30.0).abs() < 15.0,
-        "sector90_deg = {}, expected ~30 (displacement bearing, net direction of travel)",
+        sector90_deg > sector50_deg && sector90_deg < 180.0,
+        "sector90_deg = {}, expected wider than s50 and < 180",
         sector90_deg
     );
     assert!(
         n_bins_nonzero >= 15,
-        "n_bins_nonzero = {}, expected ~28 (displacement bearing concentrates the fan)",
+        "n_bins_nonzero = {}, expected >= 15",
         n_bins_nonzero
     );
 }
@@ -477,11 +449,6 @@ fn reference_scenario_numbers() {
 fn simulator_then_predict() {
     // Build a straight +X truth track with the simulator, then predict from
     // its last observation.
-    let start = KinState {
-        pos: [0.0, 0.0],
-        v: 5.0,
-        psi: 0.0,
-    };
     let t = ttc(2.0, 8.0, 0.5, 9.0, 3.0, 1.0);
     // Two waypoints so the track has >= 2 observations (the particle filter
     // requires at least 2; see `run_particle_filter`'s assertion).

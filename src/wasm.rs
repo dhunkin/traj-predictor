@@ -308,6 +308,8 @@ pub struct PredictionResult {
     path_lengths: Box<[u32]>,
     sector50: f64,
     sector90: f64,
+    sector50_start: f64,
+    sector90_start: f64,
     final_heading_mean: f64,
 }
 
@@ -338,6 +340,8 @@ impl PredictionResult {
             path_lengths: path_lengths.into_boxed_slice(),
             sector50: p.sector50,
             sector90: p.sector90,
+            sector50_start: p.sector50_start,
+            sector90_start: p.sector90_start,
             final_heading_mean: p.final_heading_mean,
         }
     }
@@ -375,6 +379,16 @@ impl PredictionResult {
     /// 90% sector width (radians).
     pub fn sector90(&self) -> f64 {
         self.sector90
+    }
+
+    /// Start angle (radians) of the 50% sector; it spans `[start, start + width]`.
+    pub fn sector50_start(&self) -> f64 {
+        self.sector50_start
+    }
+
+    /// Start angle (radians) of the 90% sector; it spans `[start, start + width]`.
+    pub fn sector90_start(&self) -> f64 {
+        self.sector90_start
     }
 
     /// Circular-mean final heading (radians, in (-pi, pi]).

@@ -54,7 +54,6 @@ fn obs_track() -> Vec<Observation> {
 
 #[test]
 fn determinism_same_seed_bit_identical() {
-    let o = obs();
     let t = ttc();
     let c = cfg(1000, 0.3, 42, 72);
     let a = predict(&obs_track(), &t, &oois(), &c);
@@ -73,7 +72,6 @@ fn determinism_same_seed_bit_identical() {
 
 #[test]
 fn bin_centers_count_and_probs_sum_to_one() {
-    let o = obs();
     let t = ttc();
     let c = cfg(1000, 0.3, 1, 72);
     let p = predict(&obs_track(), &t, &oois(), &c);
@@ -87,7 +85,6 @@ fn bin_centers_count_and_probs_sum_to_one() {
 
 #[test]
 fn point_cloud_has_n_samples() {
-    let o = obs();
     let t = ttc();
     let c = cfg(500, 0.3, 7, 72);
     let p = predict(&obs_track(), &t, &oois(), &c);
@@ -100,7 +97,6 @@ fn zero_turn_probability_concentrates_all_samples() {
     // when p_turn = 0 (the OU process is always active). The samples are
     // concentrated near the last heading (psi = 0): the 50% sector is a
     // small band, the 90% sector is wider, and the circular mean stays near 0.
-    let o = obs();
     let t = ttc();
     let c = cfg(2000, 0.0, 1, 72);
     let p = predict(&obs_track(), &t, &oois(), &c);
@@ -110,20 +106,13 @@ fn zero_turn_probability_concentrates_all_samples() {
     let s90 = p.sector90;
 
     // 50% sector is a modest band (a few bins), 90% sector is wider.
-    // After tightening the heading term (head_sigma = 0.3) the post-filter
-    // heading collapses to a single bin at seed 1, so s50 == bin_width exactly;
-    // use >= so the "concentrates" assertion still holds.
+    // A tight post-filter heading can put s50 at exactly one bin; use >=.
     assert!(s50 >= bin_width, "s50 = {}", s50);
     assert!(s90 > s50, "s90 = {}", s90);
     assert!(s90 < 2.0 * PI, "s90 = {}", s90);
 
-    // Circular mean is near the prior mean heading (0), but with a wider
-    // offset than Stage 1: the particle filter samples the initial heading
-    // uniformly in [0, 2π] from the prior rather than from last.psi, so the
-    // finite-sample circular mean drifts (here ~1.25 rad). Coordinated-turn
-    // particles (20% start in turn mode) do a sustained random walk, so the
-    // mean can drift further; a tolerance of 3.5 rad covers the spread over
-    // many seeds (measured max |mean| ≈ 3.1 over seeds 0..40).
+    // Circular mean of the fan stays in range (only two observations, so the
+    // heading is weakly determined).
     assert!(p.final_heading_mean.abs() < 3.5);
 
     // More than one bin is populated (OU spreads the headings).
@@ -136,7 +125,6 @@ fn nonzero_turn_probability_spreads_sectors() {
     // The OU turn-rate model is always active, so the heading distribution is
     // spread over more bins than a single bin => sector90 is well over one bin
     // width.
-    let o = obs();
     let t = ttc();
     let c = cfg(5000, 1.0, 123, 72);
     let p = predict(&obs_track(), &t, &oois(), &c);
@@ -157,7 +145,6 @@ fn initial_position_noise_samples_from_cov() {
     // spread around the straight-line endpoint [50, 0] rather than sitting
     // exactly on it. The initial cov noise is one contributor; the mean
     // stays near the deterministic endpoint.
-    let o = obs();
     let t = ttc();
     let c = cfg(2000, 0.0, 5, 72);
     let p = predict(&obs_track(), &t, &oois(), &c);
@@ -165,21 +152,15 @@ fn initial_position_noise_samples_from_cov() {
     let mean_x: f64 = p.point_cloud.iter().map(|p| p[0]).sum::<f64>() / 2000.0;
     let mean_y: f64 = p.point_cloud.iter().map(|p| p[1]).sum::<f64>() / 2000.0;
 
-    // The cloud is centred near the straight-line endpoint [50, 0]: the initial
-    // heading is now estimated from the first two observations (psi_init ~ 0)
-    // and sampled with std ~0.5 rad, so the spread-out endpoints average near
-    // the true endpoint rather than the origin. The heading term (psi_obs) in
-    // the likelihood pulls the mean further toward [50, 0] than the old
-    // position-only filter did. Initial cov noise is one contributor; the mean
-    // stays near [40, 0] (measured mean_x ~30-46, mean_y ~±20 across seeds
-    // 0..=40).
+    // The cloud is centred near the straight-line endpoint [55, 0] (heading
+    // and speed come from the two observations); generous bounds because two
+    // positions determine the heading only loosely.
     assert!(mean_x.abs() < 60.0, "mean_x = {}", mean_x);
     assert!(mean_y.abs() < 25.0, "mean_y = {}", mean_y);
 }
 
 #[test]
 fn different_seed_differs() {
-    let o = obs();
     let t = ttc();
     let c1 = cfg(1000, 0.3, 1, 72);
     let c2 = cfg(1000, 0.3, 2, 72);

@@ -28,27 +28,18 @@ pub fn bin_index(psi: f64, n_bins: usize) -> usize {
     idx % n_bins
 }
 
-/// Smallest circular sector (in radians) whose cumulative density reaches
-/// `threshold`, over `n_bins` azimuth bins.
+/// Smallest circular window of bins whose cumulative count reaches
+/// `threshold * n_samples`, as `(start_bin, width_in_bins)`.
 ///
-/// `counts` holds the per-bin integer counts; `n_samples` is the total number
-/// of samples. The density array is treated cyclically (doubled), so a sector
-/// may wrap around the 0/2*pi seam.
-///
-/// Algorithm (§4.5): build the doubled counts array, then slide a window of
-/// width k (in bins) starting at 0 with an incrementally maintained sum. Find
-/// the smallest k for which some window of width k has sum >= need, where
-/// `need = ceil(threshold * n_samples - 1e-9)`. Return width = k * (2*pi /
-/// n_bins).
-///
-/// Discrete approximation: the returned width is an integer multiple of one
-/// bin width (2*pi / n_bins). Integer counts avoid float drift in the density
-/// threshold.
-pub fn sector_width(counts: &[u64], n_samples: u64, threshold: f64, n_bins: usize) -> f64 {
-    if n_bins == 0 || n_samples == 0 { return 0.0; }
+/// The counts are treated cyclically (doubled), so a window may wrap around the
+/// 0/2*pi seam. The window starts at the beginning of `start_bin`, i.e. at angle
+/// `start_bin * 2*pi / n_bins`. Integer counts avoid float drift in the
+/// threshold. Because the window is found from the counts, not centred on a mean,
+/// it stays on the dominant mode of a multi-modal distribution.
+pub fn sector_window(counts: &[u64], n_samples: u64, threshold: f64, n_bins: usize) -> (usize, usize) {
+    if n_bins == 0 || n_samples == 0 { return (0, 0); }
     assert!(counts.len() == n_bins, "counts length must match n_bins");
-    
-    let bin_width = 2.0 * PI / n_bins as f64;
+
     let need = ((threshold * n_samples as f64) - 1e-9).ceil() as u64;
 
     let mut doubled = Vec::with_capacity(2 * n_bins);
@@ -57,11 +48,22 @@ pub fn sector_width(counts: &[u64], n_samples: u64, threshold: f64, n_bins: usiz
 
     for k in 1..=n_bins {
         let mut sum: u64 = doubled[0..k].iter().sum();
-        if sum >= need { return k as f64 * bin_width; }
+        if sum >= need { return (0, k); }
         for start in 1..n_bins {
             sum = sum + doubled[start + k - 1] - doubled[start - 1];
-            if sum >= need { return k as f64 * bin_width; }
+            if sum >= need { return (start, k); }
         }
     }
-    n_bins as f64 * bin_width
+    (0, n_bins)
+}
+
+/// Smallest circular sector (in radians) whose cumulative density reaches
+/// `threshold`, over `n_bins` azimuth bins (§4.5).
+///
+/// Discrete approximation: the returned width is an integer multiple of one
+/// bin width (2*pi / n_bins). See `sector_window` for the window search.
+pub fn sector_width(counts: &[u64], n_samples: u64, threshold: f64, n_bins: usize) -> f64 {
+    if n_bins == 0 || n_samples == 0 { return 0.0; }
+    let (_, k) = sector_window(counts, n_samples, threshold, n_bins);
+    k as f64 * 2.0 * PI / n_bins as f64
 }

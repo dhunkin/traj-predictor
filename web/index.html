@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Predictor — UAV Heading Prediction (Stage 1 WASM demo)</title>
+  <title>Predictor — UAV Heading Prediction</title>
 
   <!-- MapLibre GL JS 3.x via CDN (OSM raster tiles). -->
   <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
@@ -84,24 +84,25 @@
     <div class="row"><label for="horizon_s">horizon_s</label><input id="horizon_s" type="number" value="10" step="0.5" /></div>
     <div class="row"><label for="duration_s">duration_s</label><input id="duration_s" type="number" value="30" step="5" min="1" /></div>
     <div class="row"><label for="sim_speed">sim_speed</label><input id="sim_speed" type="number" value="12" step="0.5" /></div>
-    <div class="row"><label for="n_samples">n_samples</label><input id="n_samples" type="number" value="2000" step="500" /></div>
+    <div class="row"><label for="n_samples">n_samples</label><input id="n_samples" type="number" value="5000" step="500" /></div>
     <div class="row"><label for="p_turn">p_turn</label><input id="p_turn" type="number" value="0.3" step="0.05" min="0" max="1" /></div>
     <div class="row"><label for="speed_noise_mps">speed_noise_mps</label><input id="speed_noise_mps" type="number" value="0.5" step="0.1" /></div>
     <div class="row"><label for="azimuth_bins">azimuth_bins</label><input id="azimuth_bins" type="number" value="72" step="1" /></div>
     <div class="row"><label for="ooi_x">OOI X (m)</label><input id="ooi_x" type="number" value="350" step="10" /></div>
     <div class="row"><label for="ooi_y">OOI Y (m)</label><input id="ooi_y" type="number" value="0" step="10" /></div>
-    <div class="row"><label for="intent_hypothesis_prob">Intent Prob</label><input id="intent_hypothesis_prob" type="number" value="0.8" step="0.1" min="0" max="1" /></div>
+    <div class="row"><label for="intent_hypothesis_prob" title="Prior probability that the UAV is heading for the OOI; the filter updates it from the track">P(goal) prior</label><input id="intent_hypothesis_prob" type="number" value="0.5" step="0.1" min="0" max="1" /></div>
 
     <div class="checks">
       <label><input id="show_track" type="checkbox" checked /> show track</label>
       <label><input id="show_cloud" type="checkbox" checked /> show point cloud</label>
-      <label><input id="show_paths" type="checkbox" checked /> show path ribbon</label>
+      <label><input id="show_paths" type="checkbox" checked /> show path ribbon <span style="color:#c00">(red = goal)</span></label>
     </div>
 
     <div class="row">
       <label for="traj-type">trajectory</label>
       <select id="traj-type">
         <option value="straight">straight</option>
+        <option value="orbit">orbit (drifting circle)</option>
         <option value="spiral">spiral</option>
         <option value="sine">sine</option>
         <option value="zigzag">zigzag</option>
@@ -123,6 +124,9 @@
     <div><span>sector50 (°)</span><span id="s50">—</span></div>
     <div><span>sector90 (°)</span><span id="s90">—</span></div>
     <div><span>mean heading (°)</span><span id="smean">—</span></div>
+    <div title="Posterior probability that the UAV is heading for the OOI"><span>P(goal)</span><span id="sgoal">—</span></div>
+    <div title="Posterior probability of the coordinated-turn mode"><span>P(turn)</span><span id="sturn">—</span></div>
+    <div><span>v_est (m/s)</span><span id="svest">—</span></div>
     <div><span>elapsed ms</span><span id="selapsed">—</span></div>
     <div><span>n_bins_nonzero</span><span id="snz">—</span></div>
   </div>
