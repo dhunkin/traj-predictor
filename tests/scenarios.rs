@@ -220,10 +220,13 @@ fn noisy_track_wide() {
     // Wide heading sector. The heading term tightens it relative to the old
     // position-only filter (measured ~55 deg at seed 13, up to ~74 deg across
     // seeds 0..=20), but with cov=[9,0,9] it stays well over a quarter circle.
+    // NOTE: with displacement-bearing binning (net direction of travel) instead
+    // of the final psi, the sector narrows — bearing s90 ~30 deg at seed 13,
+    // staying well above a single bin (~5 deg).
     let sector90_deg = prediction.sector90 * 180.0 / PI;
     assert!(
-        sector90_deg > 50.0,
-        "sector90_deg = {}, expected wide (> 50)",
+        sector90_deg > 20.0,
+        "sector90_deg = {}, expected wide (> 20 deg with displacement bearing)",
         sector90_deg
     );
 
@@ -445,24 +448,23 @@ fn reference_scenario_numbers() {
         heading_mean_deg
     );
 
-    // Heading term anchors psi near ground truth, so the 50% sector is a tight
-    // band (~25 deg) rather than the wide (~95 deg) band of the old
-    // position-only filter. 90% sector ~60 deg (the OU turn-rate model plus the
-    // is_turning particles spread the fan moderately). The heading term
-    // concentrates the fan, so fewer bins are populated.
+    // Displacement-bearing binning (net direction of travel start -> horizon end)
+    // concentrates the fan more than the old psi-based histogram: the 50% sector
+    // is a tight band (~15 deg) and the 90% sector ~30 deg (vs the ~25/~60 deg of
+    // the old psi-based histogram). The is_turning particles still spread it a bit.
     assert!(
-        (sector50_deg - 25.0).abs() < 20.0,
-        "sector50_deg = {}, expected ~25 (heading term anchors psi)",
+        (sector50_deg - 15.0).abs() < 12.0,
+        "sector50_deg = {}, expected ~15 (displacement bearing concentrates the fan)",
         sector50_deg
     );
     assert!(
-        (sector90_deg - 60.0).abs() < 30.0,
-        "sector90_deg = {}, expected ~60 (heading term + OU spread)",
+        (sector90_deg - 30.0).abs() < 15.0,
+        "sector90_deg = {}, expected ~30 (displacement bearing, net direction of travel)",
         sector90_deg
     );
     assert!(
         n_bins_nonzero >= 15,
-        "n_bins_nonzero = {}, expected ~28 (heading term concentrates the fan)",
+        "n_bins_nonzero = {}, expected ~28 (displacement bearing concentrates the fan)",
         n_bins_nonzero
     );
 }

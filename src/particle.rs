@@ -168,11 +168,19 @@ pub fn predict(
         if !oois.is_empty() && rng.next_f64() < cfg.intent_hypothesis_prob {
             let g_idx = (rng.next_f64() * oois.len() as f64) as usize % oois.len();
             goal = Some(g_idx);
-            // Bias the initial heading toward the goal (mix base + goal heading).
+            // Bias the initial heading toward the goal. Only do so when the goal
+            // is somewhat in front of the base heading (within +/- 90 deg); if
+            // the goal is behind, keep psi near the base heading so the filter
+            // doesn't start a particle pointing 180 deg from its true track.
             let gx = oois[g_idx].pos[0] - track[0].pos[0];
             let gy = oois[g_idx].pos[1] - track[0].pos[1];
             let goal_psi = gy.atan2(gx);
-            psi = goal_psi + rng.gauss(0.0, 0.5);
+            let dpsi = ((goal_psi - base_psi + PI).rem_euclid(2.0 * PI)) - PI;
+            if dpsi.abs() < PI / 2.0 {
+                psi = goal_psi + rng.gauss(0.0, 0.3);
+            } else {
+                psi = base_psi + rng.gauss(0.0, 0.3);
+            }
         }
         // 20% of particles start in coordinated-turn mode so the filter can
         // track sustained maneuvers (spirals / orbits) as well as decaying turns.
@@ -195,11 +203,6 @@ pub fn predict(
             weight: (1.0 / n_samples as f64).ln(),
         });
     }
-
-    // ---- STEP 3: debug goal counts -----------------------------------------
-    // ~80% of particles should have drawn a goal hypothesis (intent_hypothesis_prob).
-    let with_goal = particles.iter().filter(|p| p.goal.is_some()).count();
-    println!("DEBUG: Particles with goal: {} / {}", with_goal, n_samples);
 
     // ---- 2. FILTERING LOOP (track[1..]) ------------------------------------
     for i in 1..track.len() {
@@ -237,9 +240,9 @@ pub fn predict(
             // is not over-rewarded (STEP 1). This keeps the surviving turning
             // fraction near its ~20% init rate instead of saturating at 100%.
             let floor = 0.1; // Measurement noise floor to prevent underflow
-            let mut a = obs.cov[0] + floor;
-            let mut b = obs.cov[1];
-            let mut c = obs.cov[2] + floor;
+            let a = obs.cov[0] + floor;
+            let b = obs.cov[1];
+            let c = obs.cov[2] + floor;
             let det = a * c - b * b;
             let dx = p.x - obs.pos[0];
             let dy = p.y - obs.pos[1];
@@ -291,9 +294,6 @@ pub fn predict(
             resample(&mut particles, &mut rng);
         }
     }
-
-    let turning_count = particles.iter().filter(|p| p.is_turning).count();
-    println!("DEBUG: Surviving turning particles: {} / {}", turning_count, n_samples);
 
     // ---- 3. PREDICTION LOOP (fan generation) -------------------------------
     // Compute the estimated speed and turn rate from the post-filter particle
@@ -350,6 +350,12 @@ pub fn predict(
 
         let mut time = 0.0;
         let n_steps = (cfg.horizon_s / 0.5).ceil() as usize;
+        // Save the starting position before the loop so we can bin the actual
+        // direction of travel (displacement bearing) from here to the horizon end,
+        // rather than the final nose heading `psi` (which, because particles steer
+        // toward a goal, curves away from the true path). This makes the histogram
+        // fan match the actual point_cloud.
+        let start_pos = [pos[0], pos[1]];
         // Sample the full per-particle trajectory so the demo can draw the
         // ribbon as distinct curved lines instead of a single straight sector.
         let mut path: Vec<[f64; 2]> = Vec::with_capacity(n_steps + 1);
@@ -379,19 +385,21 @@ pub fn predict(
             // Goal-steering (Stage 3): for a goal-assigned particle, force the
             // turn rate each step so the arc curves toward its OOI. Compute the
             // heading from the particle's current position to the goal and turn
-            // toward it (proportional: remaining angle per step, clamped to the
-            // turn-table limit inside propagate_step). Non-goal particles pass
-            // None so the OU baseline runs exactly as before.
-            let forced = match goal_info {
-                Some((_g, gp)) => {
-                    let gx = gp[0] - pos[0];
-                    let gy = gp[1] - pos[1];
-                    let psi_target = gy.atan2(gx);
-                    let dpsi = ((psi_target - psi + PI).rem_euclid(2.0 * PI)) - PI;
-                    Some(dpsi / dt_step)
-                }
-                None => None,
-            };
+            // toward it (proportional navigation: remaining angle per step,
+            // clamped to the turn-table limit inside propagate_step). Non-goal
+            // particles pass None so the OU baseline runs exactly as before.
+            let mut forced = None;
+            if let Some((_g, gp)) = goal_info {
+                let gx = gp[0] - pos[0];
+                let gy = gp[1] - pos[1];
+                let psi_target = gy.atan2(gx);
+                let dpsi = ((psi_target - psi + PI).rem_euclid(2.0 * PI)) - PI;
+
+                // Proportional navigation: turn towards goal, but respect max turn rate
+                let k_turn = 1.5;
+                let cmd_omega = (k_turn * dpsi).clamp(-ttc.omega_cap, ttc.omega_cap);
+                forced = Some(cmd_omega);
+            }
             let (pos_new, psi_new, v_new, omega_new) = propagate_step(
                 pos,
                 v,
@@ -416,10 +424,18 @@ pub fn predict(
 
         point_cloud.push(pos);
         path_cloud.push(path);
-        let idx = bin_index(psi, n_bins);
+        // Bin the actual direction of travel: the bearing from the start point
+        // to the horizon-end point, not the final nose heading `psi`. Because
+        // particles steer toward a goal their paths curve, so the final psi can
+        // differ from the displacement direction; binning the bearing keeps the
+        // histogram fan aligned with the drawn point_cloud.
+        let dx = pos[0] - start_pos[0];
+        let dy = pos[1] - start_pos[1];
+        let bearing = dy.atan2(dx);
+        let idx = bin_index(bearing, n_bins);
         counts[idx] += 1;
-        sum_sin += psi.sin();
-        sum_cos += psi.cos();
+        sum_sin += bearing.sin();
+        sum_cos += bearing.cos();
     }
 
     // ---- 4. RETURN ---------------------------------------------------------
