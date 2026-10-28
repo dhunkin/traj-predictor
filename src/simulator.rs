@@ -15,15 +15,17 @@ use crate::vec2::Mat2;
 pub enum Trajectory {
     /// Straight line at constant heading `psi0` (radians from +x).
     Straight { psi0: f64 },
-    /// Archimedean spiral: radius grows linearly with angle.
-    /// `r0` = starting radius, `r_growth` = d(r)/d(theta), `turns` = full turns.
+    /// Archimedean spiral `r = r0 + r_growth * theta`, flown at constant
+    /// ground speed `speed`. After `turns` full turns the UAV keeps orbiting
+    /// at the final radius.
     Spiral {
         r0: f64,
         r_growth: f64,
         turns: f64,
     },
     /// Sinusoidal path: amplitude perpendicular to `direction` (radians),
-    /// `wavelength_m` along the baseline.
+    /// `wavelength_m` along the baseline, flown at constant ground speed
+    /// `speed` (so it slows along the baseline where the path is steep).
     Sine {
         wavelength_m: f64,
         amplitude_m: f64,
@@ -48,36 +50,40 @@ pub enum Trajectory {
     },
 }
 
-/// Estimate the maximum path speed and lateral acceleration `a_lat = v^2 * kappa`
-/// of an analytic trajectory over `[0, duration_s]`, sampled on a coarse grid.
+/// Check an analytic trajectory against the turn-table limits over
+/// `[0, duration_s]`. Returns one human-readable warning per violated limit
+/// (empty when the path is flyable).
 ///
-/// Used by `generate_curved_track` to warn when the true path exceeds the
-/// turn-table constraints (`v_max`, `a_lat`): a path that physically cannot be
-/// traversed would make the filter cap its own particles and fall behind.
-fn path_speed_and_a_lat(
-    traj: &Trajectory,
-    duration_s: f64,
-    speed: f64,
-) -> (f64, f64) {
-    // theta grows linearly in t for the spiral, so sample uniformly across the
-    // duration; the other trajectories are smooth enough for the same grid.
-    let n = 128usize;
-    let mut v_max = 0.0f64;
-    let mut a_lat_max = 0.0f64;
-    for i in 0..=n {
-        let t = (i as f64 / n as f64) * duration_s;
-        let (_pos, psi, v) = sample_point(traj, t, duration_s, speed);
-        // Curvature kappa = |d(psi)/dt|; a_lat = v^2 * kappa.
-        let dt = duration_s / n as f64;
-        // Numerical derivative of psi over the grid cell.
-        let (_pos_p, psi_p, _) = sample_point(traj, t + dt, duration_s, speed);
-        let dpsi = (psi_p - psi).abs();
-        let kappa = dpsi / dt.max(1e-9);
-        let a_lat = v * v * kappa;
+/// A path the model is told is impossible (faster than `v_max`, tighter than
+/// `a_lat` or `omega_cap`) makes the filter cap its own particles and fall
+/// behind the track, so callers should surface these warnings.
+pub fn check_limits(traj: &Trajectory, duration_s: f64, speed: f64, ttc: &Ttc) -> Vec<String> {
+    let n = 800usize;
+    let dt = duration_s / n as f64;
+    let (mut v_max, mut a_lat_max, mut w_max) = (0.0f64, 0.0f64, 0.0f64);
+    for i in 0..n {
+        let t = i as f64 * dt;
+        let (_, psi, v) = sample_point(traj, t, duration_s, speed);
+        let (_, psi_n, _) = sample_point(traj, t + dt, duration_s, speed);
+        // Turn rate from the wrapped heading change; a_lat = v * omega.
+        let dpsi = (psi_n - psi + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI)
+            - std::f64::consts::PI;
+        let w = dpsi.abs() / dt.max(1e-9);
         v_max = v_max.max(v);
-        a_lat_max = a_lat_max.max(a_lat);
+        w_max = w_max.max(w);
+        a_lat_max = a_lat_max.max(v * w);
     }
-    (v_max, a_lat_max)
+    let mut out = Vec::new();
+    if v_max > ttc.v_max + 1e-6 {
+        out.push(format!("speed reaches {:.1} m/s > v_max {:.1}", v_max, ttc.v_max));
+    }
+    if a_lat_max > ttc.a_lat + 1e-6 {
+        out.push(format!("lateral acceleration reaches {:.1} m/s² > a_lat {:.1}", a_lat_max, ttc.a_lat));
+    }
+    if w_max > ttc.omega_cap + 1e-6 {
+        out.push(format!("turn rate reaches {:.2} rad/s > omega_cap {:.2}", w_max, ttc.omega_cap));
+    }
+    out
 }
 
 /// Generate a synthetic track for a curved (or straight) trajectory.
@@ -104,16 +110,8 @@ pub fn generate_curved_track(
 ) -> Vec<Observation> {
     assert!(dt_obs_s > 0.0, "dt_obs_s must be positive");
 
-    // Validate the analytic path against the turn-table constraints: the path
-    // speed must not exceed v_max and the lateral acceleration v^2 * kappa must
-    // not exceed a_lat. Warn to stderr if either is violated (non-fatal).
-    let (v_max_path, a_lat_max) = path_speed_and_a_lat(traj, duration_s, speed);
-    if v_max_path > ttc.v_max || a_lat_max > ttc.a_lat {
-        eprintln!(
-            "WARNING: Trajectory exceeds physical limits (a_lat = {:.3}, v = {:.3})",
-            a_lat_max, v_max_path
-        );
-    }
+    // Limits are checked by `check_limits` (callers surface the warnings).
+    let _ = ttc;
 
     let mut rng = Xoshiro256ss::from_seed(seed);
     let mat = Mat2::from_cov(obs_cov);
@@ -158,42 +156,63 @@ pub fn sample_point(
             r_growth,
             turns,
         } => {
-            // Analytic derivatives (theta grows linearly in t).
-            let omega_t = 2.0 * std::f64::consts::PI * *turns / duration_s; // d(theta)/dt
-            let theta = omega_t * t;
+            // Constant ground speed: integrate d(theta)/ds = 1 / sqrt(r^2 +
+            // r_growth^2) along the arc to the travelled distance s = speed*t.
+            let theta_end = 2.0 * std::f64::consts::PI * turns.max(0.0);
+            let s_target = speed * t;
+            let (mut theta, mut s) = (0.0f64, 0.0f64);
+            let h = 1e-3;
+            while theta < theta_end {
+                let r = r0 + r_growth * theta;
+                let ds = (r * r + r_growth * r_growth).sqrt() * h;
+                if s + ds > s_target {
+                    theta += h * (s_target - s) / ds;
+                    s = s_target;
+                    break;
+                }
+                s += ds;
+                theta += h;
+            }
+            let theta = theta.min(theta_end);
             let r = r0 + r_growth * theta;
-            let drdt = r_growth * omega_t;
-            let dxdt = drdt * theta.cos() - r * omega_t * theta.sin();
-            let dydt = drdt * theta.sin() + r * omega_t * theta.cos();
-            let heading = dydt.atan2(dxdt);
-            let sp = (dxdt * dxdt + dydt * dydt).sqrt();
+            // Past the last turn: keep orbiting at the final radius.
+            let theta = if s < s_target { theta + (s_target - s) / r.max(1e-9) } else { theta };
+            let growing = s >= s_target && theta < theta_end;
+            let dr = if growing { *r_growth } else { 0.0 };
+            // Tangent direction of d/dtheta [r cos, r sin].
+            let tx = dr * theta.cos() - r * theta.sin();
+            let ty = dr * theta.sin() + r * theta.cos();
             let pos = [r * theta.cos(), r * theta.sin()];
-            (pos, heading, sp)
+            (pos, ty.atan2(tx), speed)
         }
         Trajectory::Sine {
             wavelength_m,
             amplitude_m,
             direction,
         } => {
-            // Analytic derivatives. Distance along the baseline is `a = s`
-            // (not `s * cos(direction)`), and `dadt = speed`.
-            let s = speed * t;
-            let a = s;
-            let dadt = speed;
+            // Constant ground speed: find the baseline distance `a` whose arc
+            // length is s = speed * t (da/ds = 1 / sqrt(1 + y'(a)^2)).
             let k = 2.0 * std::f64::consts::PI / wavelength_m;
+            let slope = |a: f64| amplitude_m * k * (k * a).cos();
+            let s_target = speed * t;
+            let (mut a, mut s) = (0.0f64, 0.0f64);
+            let h = 0.05;
+            while s < s_target {
+                let ds = (1.0 + slope(a + 0.5 * h).powi(2)).sqrt() * h;
+                if s + ds > s_target {
+                    a += h * (s_target - s) / ds;
+                    break;
+                }
+                s += ds;
+                a += h;
+            }
             let ya = amplitude_m * (k * a).sin();
-            let dyada = amplitude_m * k * (k * a).cos();
-            let dyadt = dyada * dadt;
-            
             let pos = [
                 a * direction.cos() - ya * direction.sin(),
                 a * direction.sin() + ya * direction.cos(),
             ];
-            let dxdt = dadt * direction.cos() - dyadt * direction.sin();
-            let dydt = dadt * direction.sin() + dyadt * direction.cos();
-            let heading = dydt.atan2(dxdt);
-            let sp = (dxdt * dxdt + dydt * dydt).sqrt();
-            (pos, heading, sp)
+            let heading = direction + slope(a).atan();
+            (pos, heading, speed)
         }
         Trajectory::Orbit {
             radius_m,

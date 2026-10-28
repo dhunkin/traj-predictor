@@ -76,4 +76,7 @@ pub struct Prediction {
     /// Posterior probability of the coordinated-turn mode at the last
     /// observation.
     pub turn_prob: f64,
+    /// How many times the filter lost the track and re-seeded from the
+    /// latest observations (0 when the target stays within the model).
+    pub recoveries: u32,
 }

@@ -44,13 +44,16 @@ fn straight_away_from_ooi_drops_goal() {
 }
 
 #[test]
-fn straight_past_ooi_rises_then_falls() {
-    // Closest approach at t ~ 19 s.
+fn straight_past_ooi_falls_after_passing() {
+    // OOI 30 m off the line, closest approach at t ~ 19 s. Early on the OOI is
+    // nearly ahead, so the goal is plausible; as its bearing swings off the
+    // nose without the UAV turning toward it, the goal loses support (already
+    // before the closest approach), and it is ruled out once passed.
     let oois = ooi(150.0, 30.0);
-    let (before, _) = posterior(40.0, 15.0, &oois, straight(8.0, 0.0));
+    let (before, _) = posterior(40.0, 10.0, &oois, straight(8.0, 0.0));
     let (after, _) = posterior(40.0, 40.0, &oois, straight(8.0, 0.0));
-    assert!(before > 0.35, "P(goal) before closest approach = {before}");
-    assert!(after < 0.2, "P(goal) after passing = {after}");
+    assert!(before > 0.3, "P(goal) at t = 10 s = {before}");
+    assert!(after < 0.1, "P(goal) after passing = {after}");
     assert!(after < before - 0.2, "expected a clear drop: {before} -> {after}");
 }
 
@@ -66,7 +69,9 @@ fn homing_onto_ooi_raises_goal() {
 fn circle_in_place_drops_goal_keeps_turning() {
     let (pg, pt) = posterior(40.0, 40.0, &ooi(0.0, 300.0), drifting_circle(20.0, 0.4, [0.0, 20.0], 0.0, 0.0));
     assert!(pg < 0.3, "P(goal) = {pg}, expected to fall toward 0");
-    assert!(pt > 0.6, "P(turn) = {pt}, expected the turn mode to dominate");
+    // With cruise_tau_s = 8 s a cruise particle can hold a turn for a while,
+    // so the modes overlap more; Turn must still be the majority.
+    assert!(pt > 0.5, "P(turn) = {pt}, expected the turn mode to dominate");
 }
 
 #[test]

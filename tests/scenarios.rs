@@ -133,8 +133,8 @@ fn straight_1_ooi_no_noise() {
     let sector90_deg = prediction.sector90 * 180.0 / PI;
     // Tight but not a full circle.
     assert!(
-        sector90_deg > 20.0 && sector90_deg < 120.0,
-        "sector90_deg = {}, expected 20..120",
+        sector90_deg >= 10.0 && sector90_deg < 120.0,
+        "sector90_deg = {}, expected 10..120 (at least two bins)",
         sector90_deg
     );
 

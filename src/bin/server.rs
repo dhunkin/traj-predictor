@@ -31,7 +31,7 @@ use axum::Router;
 use serde::{Deserialize, Serialize};
 
 use predictor::particle::predict;
-use predictor::simulator::{generate_curved_track, Trajectory};
+use predictor::simulator::{check_limits, generate_curved_track, Trajectory};
 use predictor::types::{Observation, Ooi, PredictConfig, Ttc};
 
 // ---- JSON DTOs -------------------------------------------------------------
@@ -118,6 +118,8 @@ struct PredictResponseDto {
     goal_probs: Vec<f64>,
     /// Posterior probability of the coordinated-turn mode.
     turn_prob: f64,
+    /// Times the filter lost the track and re-seeded (0 = tracked throughout).
+    recoveries: u32,
     v_est: f64,
     omega_est: f64,
     bin_centers: Vec<f64>,
@@ -150,6 +152,9 @@ struct SimulateRequestDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SimulateResponseDto {
     observations: Vec<ObservationDto>,
+    /// Turn-table limits the simulated truth violates (empty if flyable).
+    /// The filter cannot follow such a track faithfully.
+    warnings: Vec<String>,
 }
 
 // ---- Handlers --------------------------------------------------------------
@@ -226,6 +231,7 @@ async fn predict_handler(Json(req): Json<PredictRequestDto>) -> Result<Json<Pred
         heading_mean: prediction.final_heading_mean,
         goal_probs: prediction.goal_probs,
         turn_prob: prediction.turn_prob,
+        recoveries: prediction.recoveries,
         v_est: prediction.v_est,
         omega_est: prediction.omega_est,
         bin_centers: prediction.bin_centers,
@@ -299,6 +305,7 @@ async fn simulate_handler(Json(req): Json<SimulateRequestDto>) -> Result<Json<Si
     // frontend can render the "true future" (the unobserved truth past the
     // last observation) as a dashed line.
     let total_duration = req.duration_s + req.horizon_s;
+    let warnings = check_limits(&traj, total_duration, req.speed, &ttc);
     let observations = generate_curved_track(
         &traj,
         req.speed,
@@ -312,7 +319,7 @@ async fn simulate_handler(Json(req): Json<SimulateRequestDto>) -> Result<Json<Si
     .map(ObservationDto::from)
     .collect();
 
-    Ok(Json(SimulateResponseDto { observations }))
+    Ok(Json(SimulateResponseDto { observations, warnings }))
 }
 
 // ---- Manual CORS middleware ------------------------------------------------
