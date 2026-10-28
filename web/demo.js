@@ -8,7 +8,13 @@
 // Anchoring: scenario-local metres are converted to lng/lat relative to an
 // arbitrary anchor point, then map.project() turns lng/lat into screen px.
 
-const API_BASE = `${window.location.protocol}//${window.location.hostname}:8081`;
+// API server: same host, port 8081 by default. Override with ?api=<port> or
+// ?api=<full URL>, e.g. to compare two server builds side by side.
+const API_BASE = (() => {
+  const api = new URLSearchParams(window.location.search).get('api');
+  if (!api) return `${window.location.protocol}//${window.location.hostname}:8081`;
+  return /^\d+$/.test(api) ? `${window.location.protocol}//${window.location.hostname}:${api}` : api;
+})();
 
 // ---- Anchoring: arbitrary origin of the scenario-local metre grid ----------
 const ANCHOR_LNG = -79.4;
@@ -301,28 +307,28 @@ function drawPathRibbon(path_cloud, path_goal) {
 // Build number inputs for the selected trajectory's parameters.
 const TRAJ_DEFS = {
   straight: { fields: [
-    { id: 'traj-psi0', label: 'psi0', value: 0 },
+    { id: 'traj-psi0', label: 'psi0', value: 0, tip: 'Heading of the straight line, in radians: 0 = east, π/2 = north (counter-clockwise).' },
   ]},
   spiral: { fields: [
-    { id: 'traj-r0', label: 'r0', value: 10 },
-    { id: 'traj-r-growth', label: 'r_growth', value: 1 },
-    { id: 'traj-turns', label: 'turns', value: 3 },
+    { id: 'traj-r0', label: 'r0', value: 10, tip: 'Starting radius of the spiral (m). Flown at sim_speed, so a small r0 means a tight, high-g turn.' },
+    { id: 'traj-r-growth', label: 'r_growth', value: 1, tip: 'How much the radius grows per radian turned (m/rad). 2π·r_growth is the gap between loops.' },
+    { id: 'traj-turns', label: 'turns', value: 3, tip: 'Number of spiral loops; after that the UAV keeps orbiting at the final radius.' },
   ]},
   orbit: { fields: [
-    { id: 'traj-radius', label: 'radius (m)', value: 20 },
-    { id: 'traj-omega', label: 'omega (rad/s)', value: 0.4 },
-    { id: 'traj-drift', label: 'drift (m/s)', value: 0.6 },
-    { id: 'traj-drift-dir', label: 'drift dir (rad)', value: 0 },
+    { id: 'traj-radius', label: 'radius (m)', value: 20, tip: 'Radius of the circle (m). Airspeed = radius × |omega|; sim_speed is not used.' },
+    { id: 'traj-omega', label: 'omega (rad/s)', value: 0.4, tip: 'Turn rate (rad/s); positive = counter-clockwise. Lateral acceleration = radius × omega².' },
+    { id: 'traj-drift', label: 'drift (m/s)', value: 0.6, tip: 'Speed at which the circle centre moves (m/s), e.g. a loiter drifting toward a target or with the wind. 0 = loiter in place.' },
+    { id: 'traj-drift-dir', label: 'drift dir (rad)', value: 0, tip: 'Direction the circle centre drifts, in radians: 0 = east, π/2 = north.' },
   ]},
   sine: { fields: [
-    { id: 'traj-wavelength', label: 'wavelength', value: 100 },
-    { id: 'traj-amplitude', label: 'amplitude', value: 20 },
-    { id: 'traj-direction', label: 'direction', value: 0 },
+    { id: 'traj-wavelength', label: 'wavelength', value: 100, tip: 'Distance along the baseline for one full weave (m). Shorter = sharper swings.' },
+    { id: 'traj-amplitude', label: 'amplitude', value: 20, tip: 'Sideways swing either side of the baseline (m). Peak lateral acceleration ≈ sim_speed² × amplitude × (2π/wavelength)².' },
+    { id: 'traj-direction', label: 'direction', value: 0, tip: 'Mean direction of travel (baseline), in radians: 0 = east, π/2 = north.' },
   ]},
   zigzag: { fields: [
-    { id: 'traj-segment', label: 'segment', value: 30 },
-    { id: 'traj-angle', label: 'angle', value: 0.5 },
-    { id: 'traj-baseline', label: 'baseline', value: 0 },
+    { id: 'traj-segment', label: 'segment', value: 30, tip: 'Length of each straight leg (m). Corners are instantaneous, which no real UAV can fly; the simulator warns.' },
+    { id: 'traj-angle', label: 'angle', value: 0.5, tip: 'Tilt of each leg from the +x axis (rad), alternating left/right. The heading jumps by 2 × angle at every corner.' },
+    { id: 'traj-baseline', label: 'baseline', value: 0, tip: 'Sideways (y) offset of the zigzag centre line (m).' },
   ]},
 };
 
@@ -338,6 +344,7 @@ function populateTrajParams() {
     const label = document.createElement('label');
     label.setAttribute('for', f.id);
     label.textContent = f.label;
+    if (f.tip) label.dataset.tip = f.tip;
     const input = document.createElement('input');
     input.id = f.id;
     input.type = 'number';
@@ -421,7 +428,12 @@ async function simulate() {
     lastObservation = observations[observations.length - 1];
     pred = null;
     draw();
-    status('track simulated: ' + observations.length + ' observations');
+    // The truth may break the turn-table limits (e.g. zigzag corners); the
+    // filter is told such motion is impossible and will lag, so say so.
+    const warn = res.warnings && res.warnings.length
+      ? ' — ⚠ exceeds limits: ' + res.warnings.join('; ') : '';
+    status('track simulated: ' + observations.length + ' observations' + warn);
+    el('status').style.color = warn ? '#b00' : '';
 
     // FIX 2: fit map to track + fan extents after Simulate.
     if (map.isStyleLoaded() && observations.length) {
@@ -527,6 +539,86 @@ async function predict() {
   });
 }
 
+// ---- Tooltips --------------------------------------------------------------
+// One explanation per control and stat, keyed by element id. Angles are in
+// radians, 0 = east (+x), counter-clockwise; positions are scenario metres
+// with the origin at the start of the simulated track (+x east, +y north).
+const TIPS = {
+  seed: 'Random seed for the simulated noise and for the particle filter. The same seed gives identical results.',
+  v_min: 'Slowest speed the model allows (m/s). Particles never fly slower, so the model cannot hover; a multicopter that stops will be mis-tracked. Fixed-wing: stall speed plus a margin.',
+  v_max: 'Fastest speed the model allows (m/s). The simulator warns when the simulated truth goes faster.',
+  a_lat: 'Maximum sideways (centripetal) acceleration, m/s². Caps the turn rate at a_lat / speed. Fixed-wing: g·tan(max bank) — 30° ≈ 5.7, 45° ≈ 9.8.',
+  a_long: 'Maximum speed-up / slow-down, m/s². Currently NOT used by the predictor (speed changes come from speed_noise_mps); kept for the planned physics model.',
+  omega_cap: 'Absolute maximum turn rate (rad/s). The effective limit is the smaller of this and a_lat / speed.',
+  horizon_s: 'How far ahead to predict (s). The fan, point cloud and path ribbon show where the UAV may be this long after the last observation.',
+  duration_s: 'Length of the simulated, observed track (s), one noisy position per second. The truth continues for horizon_s more as the dashed line.',
+  sim_speed: 'Ground speed of the simulated truth (m/s) for straight, spiral, sine and zigzag. The orbit uses radius × omega instead.',
+  n_samples: 'Number of particles (hypotheses), shared across the goal hypotheses. More = smoother fan and steadier P(goal), but slower (5000 ≈ 0.1 s).',
+  p_turn: 'Long-run share of time the model expects the UAV to spend in a sustained turn (orbit / loiter), and the starting P(turn). 1 forbids straight flight.',
+  speed_noise_mps: 'How quickly the model lets speed wander, m/s per √s. Larger = more spread along the direction of travel. The filter uses at least 0.1.',
+  azimuth_bins: 'Number of direction bins for the fan (72 = 5° each). Sector widths are whole bins.',
+  ooi_x: 'East coordinate (m) of the object of interest — a possible destination the filter tests as a goal hypothesis.',
+  ooi_y: 'North coordinate (m) of the object of interest.',
+  intent_hypothesis_prob: 'Prior probability that the UAV is heading for the OOI (the rest is "no goal"). The filter updates it from the track; the result is P(goal) in the stats bar.',
+  show_track: 'Draw the observed positions (dots) and the line through them.',
+  show_cloud: 'Draw where each particle ends up at the horizon (grey dots).',
+  show_paths: 'Draw a sample of predicted particle paths. Red paths belong to the OOI goal hypothesis, dark grey to "no goal".',
+  'traj-type': 'Shape of the simulated truth. These are test tracks: the predictor sees only the noisy positions, never the shape or its parameters.',
+  btn_sim: 'Generate a new noisy track (1 m position noise, 1 per second) plus the true future (dashed). Warns if it breaks the speed / turn limits above.',
+  btn_predict: 'Run the particle filter over the observed track and draw the predicted fan.',
+  s50: 'Narrowest arc containing 50% of the predicted directions of travel (net bearing from now to the horizon). Green lines on the map.',
+  s90: 'Narrowest arc containing 90% of the predicted directions of travel. Magenta lines on the map.',
+  smean: 'Average predicted direction of travel (degrees, 0 = east, counter-clockwise). Can sit between modes when the fan splits.',
+  sgoal: 'Posterior probability that the UAV is heading for the OOI, given the track. If it does not respond to the track, intent inference is not working.',
+  sturn: 'Posterior probability that the UAV is in a sustained turn (orbit / loiter) right now.',
+  svest: 'Filtered speed estimate (m/s) at the last observation.',
+  selapsed: 'Round-trip time of the last Predict call (ms).',
+  snz: 'Number of direction bins with any predicted mass.',
+};
+
+// Attach a tip to the label (controls) or the stat cell (stats bar), marked
+// with ⓘ via CSS.
+function attachTips() {
+  for (const [id, tip] of Object.entries(TIPS)) {
+    const node = el(id);
+    if (!node) continue;
+    let target = document.querySelector(`label[for="${id}"]`);
+    if (!target && node.type === 'checkbox') target = node.closest('label');
+    if (!target && node.tagName === 'BUTTON') target = node;
+    if (!target && node.closest('#stats')) target = node.parentElement;
+    if (target) target.dataset.tip = tip;
+  }
+}
+
+// A single floating box, positioned next to the hovered element and kept on
+// screen (the panel sits at the right edge, the stats bar at the bottom).
+const tipBox = document.createElement('div');
+tipBox.id = 'tipbox';
+document.body.appendChild(tipBox);
+function showTip(node) {
+  tipBox.textContent = node.dataset.tip;
+  tipBox.style.display = 'block';
+  const r = node.getBoundingClientRect();
+  const b = tipBox.getBoundingClientRect();
+  const inStats = !!node.closest('#stats');
+  let left = inStats ? r.left : r.left - b.width - 10;
+  let top = inStats ? r.top - b.height - 8 : r.top;
+  if (left < 8) left = Math.min(r.right + 10, window.innerWidth - b.width - 8);
+  left = Math.max(8, Math.min(left, window.innerWidth - b.width - 8));
+  top = Math.max(8, Math.min(top, window.innerHeight - b.height - 8));
+  tipBox.style.left = left + 'px';
+  tipBox.style.top = top + 'px';
+}
+document.addEventListener('mouseover', (e) => {
+  const node = e.target.closest && e.target.closest('[data-tip]');
+  if (node) showTip(node); else tipBox.style.display = 'none';
+});
+document.addEventListener('focusin', (e) => {
+  const lbl = e.target.id && document.querySelector(`label[for="${e.target.id}"][data-tip]`);
+  if (lbl) showTip(lbl);
+});
+document.addEventListener('focusout', () => { tipBox.style.display = 'none'; });
+
 // ---- Wire up ---------------------------------------------------------------
 let buttonsWired = false;
 function wireButtons() {
@@ -541,6 +633,7 @@ function wireButtons() {
   el('btn_predict').addEventListener('click', predict);
   // Populate trajectory parameter inputs on load and when the selector changes.
   populateTrajParams();
+  attachTips();
   el('traj-type').addEventListener('change', populateTrajParams);
   el('ooi_x').addEventListener('input', draw);
   el('ooi_y').addEventListener('input', draw);

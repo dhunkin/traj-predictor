@@ -66,6 +66,27 @@
     }
     #stats .title { font-weight: 600; margin-right: 4px; }
     #stats div { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+
+    /* Tooltips: elements with data-tip get an ⓘ marker; demo.js shows the
+       text in #tipbox on hover or keyboard focus. */
+    [data-tip] { cursor: help; }
+    #stats [data-tip] > span:first-child { white-space: nowrap; }
+    label[data-tip]::after, #stats [data-tip] > span:first-child::after,
+    button[data-tip]::after { content: " ⓘ"; color: #8a8a8a; font-size: 11px; }
+    #tipbox {
+      display: none;
+      position: fixed;
+      z-index: 20;
+      max-width: 280px;
+      padding: 8px 10px;
+      background: #1f2933;
+      color: #f5f7fa;
+      font-size: 12px;
+      line-height: 1.4;
+      border-radius: 6px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
@@ -90,7 +111,7 @@
     <div class="row"><label for="azimuth_bins">azimuth_bins</label><input id="azimuth_bins" type="number" value="72" step="1" /></div>
     <div class="row"><label for="ooi_x">OOI X (m)</label><input id="ooi_x" type="number" value="350" step="10" /></div>
     <div class="row"><label for="ooi_y">OOI Y (m)</label><input id="ooi_y" type="number" value="0" step="10" /></div>
-    <div class="row"><label for="intent_hypothesis_prob" title="Prior probability that the UAV is heading for the OOI; the filter updates it from the track">P(goal) prior</label><input id="intent_hypothesis_prob" type="number" value="0.5" step="0.1" min="0" max="1" /></div>
+    <div class="row"><label for="intent_hypothesis_prob">P(goal) prior</label><input id="intent_hypothesis_prob" type="number" value="0.5" step="0.1" min="0" max="1" /></div>
 
     <div class="checks">
       <label><input id="show_track" type="checkbox" checked /> show track</label>
@@ -103,8 +124,8 @@
       <select id="traj-type">
         <option value="straight">straight</option>
         <option value="orbit">orbit (drifting circle)</option>
-        <option value="spiral">spiral</option>
-        <option value="sine">sine</option>
+        <option value="spiral">spiral (constant speed)</option>
+        <option value="sine">sine (constant speed)</option>
         <option value="zigzag">zigzag</option>
       </select>
     </div>
@@ -124,8 +145,8 @@
     <div><span>sector50 (°)</span><span id="s50">—</span></div>
     <div><span>sector90 (°)</span><span id="s90">—</span></div>
     <div><span>mean heading (°)</span><span id="smean">—</span></div>
-    <div title="Posterior probability that the UAV is heading for the OOI"><span>P(goal)</span><span id="sgoal">—</span></div>
-    <div title="Posterior probability of the coordinated-turn mode"><span>P(turn)</span><span id="sturn">—</span></div>
+    <div><span>P(goal)</span><span id="sgoal">—</span></div>
+    <div><span>P(turn)</span><span id="sturn">—</span></div>
     <div><span>v_est (m/s)</span><span id="svest">—</span></div>
     <div><span>elapsed ms</span><span id="selapsed">—</span></div>
     <div><span>n_bins_nonzero</span><span id="snz">—</span></div>
