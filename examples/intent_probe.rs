@@ -1,13 +1,14 @@
 //! intent_probe — prints P(goal | track prefix) over time for the intent
 //! scenarios, averaged over a few seeds. Used to tune the goal model.
 //!
-//! Run: cargo run --release --example intent_probe
+//! Run: cargo run --release --example intent_probe -- [key=value ...]
+//! (`key=value` overrides `ModelParams` fields, e.g. intent_two_stage=1).
 
 #[path = "../tests/common/intent.rs"]
 mod intent;
 
 use intent::*;
-use predictor::particle::predict;
+use predictor::particle::{predict_with, ModelParams};
 use predictor::types::{Observation, Ooi};
 
 fn report(name: &str, duration: f64, oois: &[Ooi], truth: &dyn Fn(f64) -> [f64; 2]) {
@@ -21,7 +22,7 @@ fn report(name: &str, duration: f64, oois: &[Ooi], truth: &dyn Fn(f64) -> [f64; 
         let mut pg = 0.0;
         let mut pt = 0.0;
         for (i, tr) in tracks.iter().enumerate() {
-            let p = predict(&tr[..n], &ttc(), oois, &cfg(seeds[i]));
+            let p = predict_with(&tr[..n], &ttc(), oois, &cfg(seeds[i]), &params());
             pg += p.goal_probs.iter().sum::<f64>();
             pt += p.turn_prob;
         }
@@ -41,7 +42,7 @@ fn coverage(name: &str, duration: f64, oois: &[Ooi], truth: &dyn Fn(f64) -> [f64
     for s in 1..=n_seeds {
         let tr = observe(duration, s, |t| truth(t));
         let c = cfg(s);
-        let p = predict(&tr, &ttc(), oois, &c);
+        let p = predict_with(&tr, &ttc(), oois, &c, &params());
         let a = truth(duration);
         let b = truth(duration + c.horizon_s);
         let brg = (b[1] - a[1]).atan2(b[0] - a[0]).rem_euclid(2.0 * std::f64::consts::PI);
@@ -54,6 +55,17 @@ fn coverage(name: &str, duration: f64, oois: &[Ooi], truth: &dyn Fn(f64) -> [f64
     }
     let k = n_seeds as f64;
     println!("{:<28} in50 {:.2}  in90 {:.2}  nearest-pt {:.1} m", name, in50 as f64 / k, in90 as f64 / k, miss / k);
+}
+
+/// Model parameters from `key=value` command-line arguments.
+fn params() -> ModelParams {
+    let mut mp = ModelParams::default();
+    for a in std::env::args().skip(1) {
+        if let Some((k, v)) = a.split_once('=') {
+            mp.set(k, v.parse().unwrap()).unwrap_or_else(|e| panic!("{e}"));
+        }
+    }
+    mp
 }
 
 fn main() {

@@ -34,3 +34,8 @@ lto = true
 name = "server"
 path = "src/bin/server.rs"
 required-features = ["server"]
+
+# Replays a flight recorded by the web demo's "Download flight" (uses serde_json).
+[[example]]
+name = "replay_flight"
+required-features = ["server"]

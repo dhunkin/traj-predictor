@@ -239,6 +239,9 @@ pub fn make_case(family: usize, seed: u64, mp: &ModelParams) -> Case {
                 course_err: 0.0,
                 turn_age: 0.0,
                 weave_freq: mp.sample_weave_freq(&mut rng),
+                weave_amp: mp.weave_amp_max * rng.next_f64(),
+                weave_phase: 2.0 * PI * rng.next_f64(),
+                restlessness: mp.sample_restlessness(&mut rng),
                 log_w: 0.0,
                 weight: 1.0,
             };

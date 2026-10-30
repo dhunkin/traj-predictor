@@ -88,6 +88,14 @@ pub struct ModelParams {
     /// to go on, while a fresh turn may still end soon. `f64::INFINITY` gives a
     /// constant hazard.
     pub turn_persistence_s: f64,
+    /// Turn reversal / re-turn rate (1/s): while turning, the turn rate may
+    /// jump to a freshly drawn value (often the other way), starting a new
+    /// turn. S-turns and waypoint changes need it; without it a "no goal"
+    /// particle cannot follow a reversal and a goal hypothesis whose steering
+    /// happens to point the new way wins by accident. Like the end of a turn,
+    /// it fades with the turn's age (turn_persistence_s), so a long loiter is
+    /// not expected to reverse.
+    pub turn_change_rate: f64,
     /// Goal-switching hazard (1/s): the goal is redrawn from the prior, so a
     /// retargeting UAV can be followed and the posterior relaxes toward the
     /// prior.
@@ -100,20 +108,41 @@ pub struct ModelParams {
     /// then predicts back toward its mean course, and sustained circling can
     /// only be explained by the Turn mode.
     pub k_course: f64,
-    /// Prior share of "weaver" particles. A weaver's cruise heading is a
-    /// lightly damped oscillator about its course (or goal bearing) instead of
-    /// a first-order return, so a weaving UAV is tracked and predicted to keep
-    /// weaving about its mean course. The filter learns which kind fits.
+    /// Prior share of "weaver" particles. A weaver's cruise heading follows a
+    /// bounded sinusoid about its course (or goal bearing),
+    /// `heading - target = amp * sin(phase)`, so a weaving UAV is tracked and
+    /// predicted to keep weaving about its mean course, never to loop. The
+    /// filter learns which kind fits, and the weave's frequency, amplitude
+    /// and phase.
     pub p_weave: f64,
-    /// Weaver natural frequency (rad/s), drawn log-uniformly per particle in
-    /// [min, max] (a 100 m wavelength at 12 m/s is 0.75 rad/s).
+    /// Weaver angular frequency (rad/s) of the heading swing, drawn
+    /// log-uniformly per particle in [min, max]. A sine of wavelength L flown
+    /// at baseline speed u swings at 2*pi*u/L (100 m at 9 m/s: 0.57 rad/s).
     pub weave_freq_min: f64,
     pub weave_freq_max: f64,
-    /// Weaver damping time (s) of the turn rate; long, so a weave persists.
-    pub weave_tau_s: f64,
-    /// Weaver turn-rate noise (rad/s per sqrt(s)), large enough to build up
-    /// and re-phase a swing.
-    pub weave_noise: f64,
+    /// Largest weave amplitude (rad): the heading's swing either side of the
+    /// course.
+    pub weave_amp_max: f64,
+    /// Weave phase jitter (rad per sqrt(s)) and amplitude random walk (rad per
+    /// sqrt(s)): how fast a weave may drift out of rhythm or change size.
+    pub weave_phase_noise: f64,
+    pub weave_amp_noise: f64,
+    /// Steady <-> weaver switching rate (1/s), split so the stationary weaver
+    /// share is p_weave. A new weaver is born in step with the current heading
+    /// error, so weavers keep appearing while the track weaves.
+    pub weave_switch_rate: f64,
+    /// Newborn weaver: amplitude (rad) drawn uniformly between the current
+    /// heading error and this (capped by weave_amp_max). A small value makes
+    /// a weave start gently and grow through `weave_amp_noise` only if the
+    /// track keeps weaving.
+    pub weave_birth_amp: f64,
+    /// Restlessness: each particle draws a multiplier on its manoeuvre-onset
+    /// rates (cruise -> turn, steady -> weaver), log-uniform in [min, max],
+    /// and keeps it. The filter learns it from the track: a long steady track
+    /// weeds out restless particles, so its fan narrows, while a track that
+    /// keeps manoeuvring keeps them. min == max == 1 disables it.
+    pub restless_min: f64,
+    pub restless_max: f64,
     /// Cruise mode: random-walk intensity of the course (rad per sqrt(s)), so
     /// a slow course change is still cruise.
     pub course_walk: f64,
@@ -137,19 +166,158 @@ pub struct ModelParams {
     /// target has out-manoeuvred the model (e.g. it breaks the turn-table
     /// limits) and the kinematics are re-seeded from the latest observations.
     pub recovery_d2: f64,
+    /// Course memory (s): a cruise particle's course relaxes toward its
+    /// current heading with this time constant, so a heading held for a while
+    /// becomes the new course and old manoeuvres are forgotten. Without it, a
+    /// "no goal" particle that turned in cruise keeps being pulled back to the
+    /// course it had before, fits a new straight line badly, and the goal
+    /// hypotheses win by default. `f64::INFINITY` keeps the course forever.
+    pub course_tau_s: f64,
+    /// Outlier-tolerant measurement model: each observation is Gaussian
+    /// (its covariance) with probability 1 - outlier_prob, otherwise from a
+    /// wide Gaussian with outlier_sigma_m added in quadrature. Bounds how
+    /// much a single awkward step can count against a hypothesis.
+    pub outlier_prob: f64,
+    pub outlier_sigma_m: f64,
+    /// Common random numbers: every goal sub-filter starts from the same
+    /// particles, draws the same random numbers and resamples at the same
+    /// steps, so the difference between their likelihoods reflects the goal
+    /// and not Monte-Carlo luck (P(goal) is far less noisy).
+    pub common_random_numbers: bool,
+    /// Tempering of the goal evidence (0..1]: each step's likelihood ratio
+    /// between goal hypotheses is raised to this power before P(goal) is
+    /// updated (a "power posterior"). The motion model is only an
+    /// approximation, so its likelihoods are over-sharp; tempering keeps
+    /// P(goal) from swinging to 0 or 1 on a few lucky or unlucky steps. The
+    /// particles inside each hypothesis are weighted normally. 1 = plain Bayes.
+    pub goal_evidence_power: f64,
+    /// Two-stage intent inference. One goal-free filter (all particles)
+    /// tracks the UAV; P(goal) is then scored once per observation from that
+    /// filter's estimates instead of from one particle filter per goal:
+    ///   * cruise: did the heading change as steering toward the OOI predicts
+    ///     (k_goal * bearing error), or as course-keeping predicts?
+    ///   * turn: does the loop centre drift toward the OOI
+    ///     (goal_drift_frac * v), or stay put?
+    /// The two are mixed by the filter's P(turn), so a sharp manoeuvre leaves
+    /// the steering evidence uninformative instead of deciding the goal.
+    /// Far less Monte-Carlo noise than per-goal filters, at the cost of
+    /// scoring point estimates rather than whole particle paths.
+    pub intent_two_stage: bool,
+    /// Hybrid: keep one particle filter per goal for tracking and for the
+    /// prediction fan (goal-consistent states), but take P(goal) from the
+    /// two-stage score computed on the "no goal" filter (stable), and mix the
+    /// fan by it. Ignored when `intent_two_stage` is set.
+    pub intent_hybrid: bool,
+    /// Two-stage: intent is scored over non-overlapping windows of this
+    /// length (s). Per-second heading changes are dominated by estimation
+    /// noise; over a few seconds a steering turn accumulates well above it.
+    pub intent_window_s: f64,
+    /// Two-stage: std-dev (rad) of the heading change over one window around
+    /// the steering prediction (estimation noise at both ends plus wander).
+    pub intent_sigma_heading: f64,
+    /// Two-stage: std-dev (m/s) of the measured loop-centre drift velocity.
+    pub intent_sigma_drift: f64,
+    /// Two-stage: share of each intent likelihood that is uninformative
+    /// (outlier tolerance).
+    pub intent_outlier: f64,
+    /// Two-stage: tempering of the per-observation intent evidence (the
+    /// features are correlated between observations).
+    pub intent_power: f64,
+    /// Two-stage: degrees of freedom of the Student-t score for both
+    /// features. Heavy tails make one badly estimated heading (e.g. mid-
+    /// manoeuvre) count far less than a Gaussian would; `f64::INFINITY` is
+    /// Gaussian.
+    pub intent_dof: f64,
 }
 
 impl ModelParams {
     /// Draw a particle's agility log-uniformly in
     /// [cruise_omega_sigma_min, cruise_omega_sigma_max].
     /// Draw a particle's weave frequency: 0 (steady flyer) with probability
-    /// 1 - p_weave, else log-uniform in [weave_freq_min, weave_freq_max].
+    /// 1 - p_weave, else a weaver frequency.
     pub fn sample_weave_freq(&self, rng: &mut Xoshiro256ss) -> f64 {
+        if rng.next_f64() >= self.p_weave {
+            0.0
+        } else {
+            self.sample_weave_freq_given_weaver(rng)
+        }
+    }
+
+    /// A weaver's frequency, log-uniform in [weave_freq_min, weave_freq_max]
+    /// (0 when weaving is disabled).
+    pub fn sample_weave_freq_given_weaver(&self, rng: &mut Xoshiro256ss) -> f64 {
         let (lo, hi) = (self.weave_freq_min.max(1e-3), self.weave_freq_max);
-        if rng.next_f64() >= self.p_weave || hi <= 0.0 {
+        if hi <= 0.0 {
             0.0
         } else if hi <= lo {
             hi
+        } else {
+            lo * (hi / lo).powf(rng.next_f64())
+        }
+    }
+
+    /// Set a parameter by field name (booleans: 0 = false, anything else =
+    /// true). Used by the calibration harness and the flight replay to sweep
+    /// or override parameters from the command line.
+    pub fn set(&mut self, key: &str, v: f64) -> Result<(), String> {
+        match key {
+            "cruise_tau_s" => self.cruise_tau_s = v,
+            "cruise_omega_sigma" => {
+                self.cruise_omega_sigma_min = v;
+                self.cruise_omega_sigma_max = v;
+            }
+            "cruise_omega_sigma_min" => self.cruise_omega_sigma_min = v,
+            "cruise_omega_sigma_max" => self.cruise_omega_sigma_max = v,
+            "turn_omega_walk" => self.turn_omega_walk = v,
+            "omega_turn_min" => self.omega_turn_min = v,
+            "turn_entry_sigma" => self.turn_entry_sigma = v,
+            "mode_switch_rate" => self.mode_switch_rate = v,
+            "turn_persistence_s" => self.turn_persistence_s = v,
+            "turn_change_rate" => self.turn_change_rate = v,
+            "goal_evidence_power" => self.goal_evidence_power = v,
+            "intent_two_stage" => self.intent_two_stage = v != 0.0,
+            "intent_hybrid" => self.intent_hybrid = v != 0.0,
+            "intent_sigma_heading" => self.intent_sigma_heading = v,
+            "intent_sigma_drift" => self.intent_sigma_drift = v,
+            "intent_outlier" => self.intent_outlier = v,
+            "intent_window_s" => self.intent_window_s = v,
+            "intent_power" => self.intent_power = v,
+            "intent_dof" => self.intent_dof = v,
+            "goal_switch_rate" => self.goal_switch_rate = v,
+            "k_goal" => self.k_goal = v,
+            "k_course" => self.k_course = v,
+            "course_walk" => self.course_walk = v,
+            "p_weave" => self.p_weave = v,
+            "weave_amp_max" => self.weave_amp_max = v,
+            "weave_switch_rate" => self.weave_switch_rate = v,
+            "weave_birth_amp" => self.weave_birth_amp = v,
+            "restless_min" => self.restless_min = v,
+            "restless_max" => self.restless_max = v,
+            "weave_phase_noise" => self.weave_phase_noise = v,
+            "weave_amp_noise" => self.weave_amp_noise = v,
+            "weave_freq_min" => self.weave_freq_min = v,
+            "weave_freq_max" => self.weave_freq_max = v,
+            "recovery_d2" => self.recovery_d2 = v,
+            "course_tau_s" => self.course_tau_s = v,
+            "outlier_prob" => self.outlier_prob = v,
+            "outlier_sigma_m" => self.outlier_sigma_m = v,
+            "common_random_numbers" => self.common_random_numbers = v != 0.0,
+            "goal_drift_frac" => self.goal_drift_frac = v,
+            "omega_loop" => self.omega_loop = v,
+            "filter_speed_noise_floor" => self.filter_speed_noise_floor = v,
+            "min_mode_share" => self.min_mode_share = v,
+            "meas_floor_m2" => self.meas_floor_m2 = v,
+            
+            _ => return Err(format!("unknown ModelParams field: {key}")),
+        }
+        Ok(())
+    }
+
+    /// Draw a particle's restlessness multiplier (see `restless_min`).
+    pub fn sample_restlessness(&self, rng: &mut Xoshiro256ss) -> f64 {
+        let (lo, hi) = (self.restless_min.max(1e-6), self.restless_max);
+        if hi <= lo {
+            lo
         } else {
             lo * (hi / lo).powf(rng.next_f64())
         }
@@ -177,6 +345,7 @@ impl Default for ModelParams {
             turn_entry_sigma: 0.45,
             mode_switch_rate: 0.1,
             turn_persistence_s: 5.0,
+            turn_change_rate: 0.1,
             goal_switch_rate: 0.02,
             k_goal: 0.1,
             k_course: 0.2,
@@ -184,14 +353,32 @@ impl Default for ModelParams {
             p_weave: 0.3,
             weave_freq_min: 0.2,
             weave_freq_max: 1.5,
-            weave_tau_s: 30.0,
-            weave_noise: 0.2,
+            weave_amp_max: 1.2,
+            weave_phase_noise: 0.3,
+            weave_amp_noise: 0.1,
+            weave_switch_rate: 0.1,
+            weave_birth_amp: 1.2,
+            restless_min: 1.0,
+            restless_max: 1.0,
             goal_drift_frac: 0.08,
             omega_loop: 0.2,
             filter_speed_noise_floor: 0.1,
             min_mode_share: 0.1,
             meas_floor_m2: 0.1,
             recovery_d2: 9.0,
+            course_tau_s: 6.0,
+            outlier_prob: 0.05,
+            outlier_sigma_m: 10.0,
+            common_random_numbers: true,
+            goal_evidence_power: 1.0,
+            intent_two_stage: false,
+            intent_hybrid: true,
+            intent_window_s: 5.0,
+            intent_sigma_heading: 0.2,
+            intent_sigma_drift: 0.4,
+            intent_outlier: 0.1,
+            intent_power: 1.0,
+            intent_dof: 2.0,
         }
     }
 }
@@ -254,9 +441,15 @@ pub struct Particle {
     pub course_err: f64,
     /// Turn mode: time (s) since the current turn started.
     pub turn_age: f64,
-    /// Cruise mode: 0 for a steady flyer, else the natural frequency (rad/s)
-    /// of this weaver's heading oscillation; see `ModelParams::p_weave`.
+    /// Cruise mode: 0 for a steady flyer, else the angular frequency (rad/s)
+    /// of this weaver's heading swing; see `ModelParams::p_weave`.
     pub weave_freq: f64,
+    /// Weaver: amplitude (rad) and phase (rad) of the heading swing.
+    pub weave_amp: f64,
+    pub weave_phase: f64,
+    /// Multiplier on this particle's manoeuvre-onset rates; see
+    /// `ModelParams::restless_min`.
+    pub restlessness: f64,
     /// Normalised log weight (the filter's working representation).
     pub log_w: f64,
     /// Linear copy of `exp(log_w)`, used for N_eff, resampling and summaries.
@@ -287,7 +480,7 @@ impl Particle {
         //    than redrawing it) so a particle that was already curving keeps
         //    its curvature when it is reclassified as turning.
         let rate = match self.mode {
-            Mode::Cruise => mp.mode_switch_rate * p_turn,
+            Mode::Cruise => mp.mode_switch_rate * p_turn * self.restlessness,
             Mode::Turn => {
                 let persist = if mp.turn_persistence_s.is_finite() {
                     mp.turn_persistence_s / (mp.turn_persistence_s + self.turn_age)
@@ -298,7 +491,16 @@ impl Particle {
             }
         };
         if self.mode == Mode::Turn {
+            let persist = if mp.turn_persistence_s.is_finite() {
+                mp.turn_persistence_s / (mp.turn_persistence_s + self.turn_age)
+            } else {
+                1.0
+            };
             self.turn_age += dt;
+            if rng.next_f64() < 1.0 - (-mp.turn_change_rate * self.restlessness * persist * dt).exp() {
+                self.omega = rng.gauss(0.0, mp.turn_entry_sigma);
+                self.turn_age = 0.0;
+            }
         }
         if rng.next_f64() < 1.0 - (-rate * dt).exp() {
             self.mode = match self.mode {
@@ -312,6 +514,8 @@ impl Particle {
                     // cruise_tau_s: a released turn eases out.
                     self.wander = self.omega;
                     self.course_err = 0.0;
+                    // A weave resumes from the new course, mid-swing at 0.
+                    self.weave_phase = 0.0;
                     Mode::Cruise
                 }
             };
@@ -328,6 +532,9 @@ impl Particle {
         // 4. Turn rate.
         match self.mode {
             Mode::Cruise => {
+                if mp.course_tau_s.is_finite() {
+                    self.course_err *= (-dt / mp.course_tau_s.max(1e-6)).exp();
+                }
                 self.course_err += rng.gauss(0.0, mp.course_walk) * dt.sqrt();
                 // Heading error to the target direction (goal bearing, else
                 // the course; the course error is unwrapped, see `course_err`).
@@ -335,14 +542,36 @@ impl Particle {
                     Some(b) => (-wrap(b - self.psi), mp.k_goal),
                     None => (self.course_err, mp.k_course),
                 };
+                // Steady <-> weaver switching. A newborn weaver continues the
+                // current heading: amplitude >= |err|, phase with
+                // amp * sin(phase) = err, swinging either way.
+                let weaving = self.weave_freq > 0.0;
+                let switch_rate = mp.weave_switch_rate
+                    * if weaving { 1.0 - mp.p_weave } else { mp.p_weave * self.restlessness };
+                if rng.next_f64() < 1.0 - (-switch_rate * dt).exp() {
+                    if weaving {
+                        self.weave_freq = 0.0;
+                        self.wander = self.omega;
+                    } else {
+                        self.weave_freq = mp.sample_weave_freq_given_weaver(rng);
+                        let e = err.clamp(-mp.weave_amp_max, mp.weave_amp_max);
+                        let top = mp.weave_birth_amp.min(mp.weave_amp_max).max(e.abs());
+                        self.weave_amp = e.abs() + (top - e.abs()) * rng.next_f64();
+                        let base = (e / self.weave_amp.max(1e-9)).clamp(-1.0, 1.0).asin();
+                        self.weave_phase = if rng.next_f64() < 0.5 { base } else { PI - base };
+                    }
+                }
                 if self.weave_freq > 0.0 {
-                    // Weaver: lightly damped oscillator about the target,
-                    // d(omega)/dt = -f^2 * err - omega / weave_tau + noise.
-                    let alpha = (-dt / mp.weave_tau_s).exp();
-                    let f2 = self.weave_freq * self.weave_freq;
-                    self.wander = alpha * self.wander - f2 * err * dt
-                        + mp.weave_noise * dt.sqrt() * rng.gauss(0.0, 1.0);
-                    self.omega = self.wander;
+                    // Weaver: steer the heading error onto the swing
+                    // amp * sin(phase); the rhythm and size jitter slowly. The
+                    // turn-rate limit below may make it lag a sharp swing.
+                    self.weave_phase += self.weave_freq * dt
+                        + rng.gauss(0.0, mp.weave_phase_noise) * dt.sqrt();
+                    self.weave_amp = (self.weave_amp + rng.gauss(0.0, mp.weave_amp_noise) * dt.sqrt())
+                        .clamp(0.0, mp.weave_amp_max);
+                    let desired = self.weave_amp * self.weave_phase.sin();
+                    self.omega = (desired - err) / dt;
+                    self.wander = self.omega;
                 } else {
                     // Steady flyer: OU wander plus a first-order pull onto the
                     // target with gain k.
@@ -552,6 +781,168 @@ fn substeps(dt: f64) -> (usize, f64) {
     (n, dt / n as f64)
 }
 
+/// Weighted summary of a goal-free particle set at one observation, used by
+/// the two-stage intent scoring.
+struct Summary {
+    t: f64,
+    pos: [f64; 2],
+    psi: f64,
+    omega: f64,
+    v: f64,
+    turn: f64,
+}
+
+impl Summary {
+    /// Centre of the current loop (position + radius to the left of the
+    /// heading for a CCW turn), or `None` when the turn is too gentle for the
+    /// centre to be meaningful.
+    fn centre(&self, mp: &ModelParams) -> Option<[f64; 2]> {
+        if self.omega.abs() < 0.5 * mp.omega_loop || self.turn < 0.5 {
+            return None;
+        }
+        let r = self.v / self.omega;
+        Some([self.pos[0] - r * self.psi.sin(), self.pos[1] + r * self.psi.cos()])
+    }
+}
+
+fn summarise(particles: &[Particle], t: f64) -> Summary {
+    let (mut x, mut y, mut s, mut c, mut w_om, mut v, mut turn) =
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    for p in particles {
+        let w = p.weight;
+        x += w * p.x;
+        y += w * p.y;
+        s += w * p.psi.sin();
+        c += w * p.psi.cos();
+        w_om += w * p.omega;
+        v += w * p.v;
+        if p.mode == Mode::Turn {
+            turn += w;
+        }
+    }
+    Summary {
+        t,
+        pos: [x, y],
+        psi: s.atan2(c),
+        omega: w_om,
+        v,
+        turn,
+    }
+}
+
+/// Density of a standardised residual `r` (radius for `dim` = 2) under an
+/// isotropic Student-t with `dof` degrees of freedom; Gaussian for infinite
+/// `dof`. Normalised over the line (dim 1) or the plane (dim 2).
+fn student_t(r: f64, dof: f64, dim: u32) -> f64 {
+    let r2 = r * r;
+    if !dof.is_finite() {
+        return if dim == 1 {
+            (-0.5 * r2).exp() / (2.0 * PI).sqrt()
+        } else {
+            (-0.5 * r2).exp() / (2.0 * PI)
+        };
+    }
+    let nu = dof.max(0.1);
+    if dim == 1 {
+        // Gamma((nu+1)/2) / (sqrt(nu pi) Gamma(nu/2)) * (1 + r^2/nu)^(-(nu+1)/2)
+        let c = (ln_gamma(0.5 * (nu + 1.0)) - ln_gamma(0.5 * nu)).exp() / (nu * PI).sqrt();
+        c * (1.0 + r2 / nu).powf(-0.5 * (nu + 1.0))
+    } else {
+        // Bivariate: 1 / (2 pi) * (1 + r^2/nu)^(-(nu+2)/2)
+        (1.0 + r2 / nu).powf(-0.5 * (nu + 2.0)) / (2.0 * PI)
+    }
+}
+
+/// ln Gamma(x) for x > 0 (Lanczos approximation, g = 7).
+fn ln_gamma(x: f64) -> f64 {
+    const C: [f64; 9] = [
+        0.999_999_999_999_809_9, 676.520_368_121_885_1, -1_259.139_216_722_402_8,
+        771.323_428_777_653_1, -176.615_029_162_140_6, 12.507_343_278_686_905,
+        -0.138_571_095_265_720_12, 9.984_369_578_019_572e-6, 1.505_632_735_149_311_6e-7,
+    ];
+    if x < 0.5 {
+        return (PI / (PI * x).sin()).ln() - ln_gamma(1.0 - x);
+    }
+    let x = x - 1.0;
+    let mut a = C[0];
+    let t = x + 7.5;
+    for (i, &c) in C.iter().enumerate().skip(1) {
+        a += c / (x + i as f64);
+    }
+    0.5 * (2.0 * PI).ln() + (x + 0.5) * t.ln() - t + a.ln()
+}
+
+/// Log-likelihood of one intent window (filter summaries from its start to
+/// its end) under one hypothesis (`goal`), mixing a cruise (steering) and a
+/// turn (loop-drift) term by the window's mean P(turn). Each term keeps an
+/// `intent_outlier` share uninformative, and the "other" feature of each term
+/// is uninformative too, so both are densities over the same space.
+fn intent_log_lik(
+    win: &[Summary],
+    goal: Option<usize>,
+    oois: &[Ooi],
+    mp: &ModelParams,
+    ttc: &Ttc,
+) -> f64 {
+    let (a, b) = (&win[0], &win[win.len() - 1]);
+    let span = (b.t - a.t).max(1e-6);
+    let eps = mp.intent_outlier.clamp(0.0, 1.0);
+    let limit_of = |v: f64| (ttc.a_lat / v.max(0.1)).min(ttc.omega_cap);
+    // Uniform densities of the two features over their plausible ranges.
+    let u_psi = 1.0 / (2.0 * limit_of(a.v) * span).clamp(1e-3, 2.0 * PI);
+    let vmax = ttc.v_max.max(1.0);
+    let u_drift = 1.0 / (4.0 * vmax * vmax);
+
+    // Cruise: heading change over the window vs the steering each hypothesis
+    // predicts, summed over the window's steps. "No goal" means "not steered
+    // toward any OOI": no systematic change. A goal is scored averaged over
+    // steering gains 0.5x, 1x and 2x k_goal (UAVs differ in how hard they
+    // steer toward a target).
+    let sh = mp.intent_sigma_heading.max(1e-6);
+    let dpsi = wrap(b.psi - a.psi);
+    let score = |mean: f64| student_t((dpsi - mean) / sh, mp.intent_dof, 1) / sh;
+    let steer_density = match goal {
+        Some(g) => {
+            let predicted = |f: f64| -> f64 {
+                win.windows(2)
+                    .map(|w| {
+                        let bearing = (oois[g].pos[1] - w[0].pos[1]).atan2(oois[g].pos[0] - w[0].pos[0]);
+                        let lim = limit_of(w[0].v);
+                        (f * mp.k_goal * wrap(bearing - w[0].psi)).clamp(-lim, lim) * (w[1].t - w[0].t)
+                    })
+                    .sum()
+            };
+            let gains = [0.5, 1.0, 2.0];
+            gains.iter().map(|&f| score(predicted(f))).sum::<f64>() / gains.len() as f64
+        }
+        None => score(0.0),
+    };
+    let steer = (1.0 - eps) * steer_density + eps * u_psi;
+
+    // Turn: loop-centre drift velocity over the window.
+    let drift = match (a.centre(mp), b.centre(mp)) {
+        (Some(c0), Some(c1)) => {
+            let u = [(c1[0] - c0[0]) / span, (c1[1] - c0[1]) / span];
+            let expect = match goal {
+                Some(g) => {
+                    let bearing = (oois[g].pos[1] - c1[1]).atan2(oois[g].pos[0] - c1[0]);
+                    let looping = (b.omega.abs() / mp.omega_loop).min(1.0);
+                    let sp = mp.goal_drift_frac * looping * b.v;
+                    [sp * bearing.cos(), sp * bearing.sin()]
+                }
+                None => [0.0, 0.0],
+            };
+            let sd = mp.intent_sigma_drift.max(1e-6);
+            let d2 = ((u[0] - expect[0]).powi(2) + (u[1] - expect[1]).powi(2)) / (sd * sd);
+            (1.0 - eps) * student_t(d2.sqrt(), mp.intent_dof, 2) / (sd * sd) + eps * u_drift
+        }
+        _ => u_drift,
+    };
+
+    let m = (win.iter().map(|s| s.turn).sum::<f64>() / win.len() as f64).clamp(0.0, 1.0);
+    ((1.0 - m) * steer * u_drift + m * u_psi * drift).max(1e-300).ln()
+}
+
 /// Particle filter over the full track, then a forward prediction fan.
 ///
 /// See the module docstring for the model. `track` is the ordered list of
@@ -606,7 +997,11 @@ pub fn predict_with(
             }
         }
     }
-    let per_bank = (n_samples / hypotheses.len()).max(2);
+    // Two-stage: the filter tracks with one goal-free bank; `hypotheses` is
+    // kept for scoring intent from that bank's estimates.
+    let filter_hyps: Vec<(Option<usize>, f64)> =
+        if mp.intent_two_stage { vec![(None, 1.0)] } else { hypotheses.clone() };
+    let per_bank = (n_samples / filter_hyps.len()).max(2);
 
     // Heading and speed come from the first displacement, with a spread that
     // reflects the position noise of the two observations. The goal does NOT
@@ -614,13 +1009,15 @@ pub fn predict_with(
     let cov_factor = Mat2::from_cov(track[0].cov);
     let k0 = kin_prior(&track[0], &track[1], mp);
 
-    let mut banks: Vec<Bank> = Vec::with_capacity(hypotheses.len());
-    for &(goal, pr) in hypotheses.iter() {
+    // With common random numbers every bank starts from the same particles
+    // (only the goal label differs) and gets an identical random stream;
+    // otherwise each bank draws its own particles and stream.
+    let make_particles = |rng: &mut Xoshiro256ss, goal: Option<usize>| -> Vec<Particle> {
         let mut particles = Vec::with_capacity(per_bank);
         for _ in 0..per_bank {
-            let noise = cov_factor.sample(&mut rng);
+            let noise = cov_factor.sample(rng);
             let mode = if rng.next_f64() < p_turn { Mode::Turn } else { Mode::Cruise };
-            let agility = mp.sample_agility(&mut rng);
+            let agility = mp.sample_agility(rng);
             let omega = match mode {
                 Mode::Turn => rng.gauss(0.0, mp.turn_entry_sigma),
                 Mode::Cruise => rng.gauss(0.0, agility),
@@ -638,13 +1035,33 @@ pub fn predict_with(
                 wander: omega,
                 course_err: 0.0,
                 turn_age: 0.0,
-                weave_freq: mp.sample_weave_freq(&mut rng),
+                weave_freq: mp.sample_weave_freq(rng),
+                weave_amp: mp.weave_amp_max * rng.next_f64(),
+                weave_phase: 2.0 * PI * rng.next_f64(),
+                restlessness: mp.sample_restlessness(rng),
                 log_w: -(per_bank as f64).ln(),
                 weight: 1.0 / per_bank as f64,
             });
         }
+        particles
+    };
+    let mut banks: Vec<Bank> = Vec::with_capacity(filter_hyps.len());
+    let base = make_particles(&mut rng, None);
+    for &(goal, pr) in filter_hyps.iter() {
+        let particles = if mp.common_random_numbers {
+            base.iter().map(|p| Particle { goal, ..*p }).collect()
+        } else {
+            make_particles(&mut rng, goal)
+        };
         banks.push(Bank { goal, prior: pr, prob: pr, particles });
     }
+    let filter_seed = cfg.seed ^ 0x9E37_79B9_7F4A_7C15;
+    let mut bank_rngs: Vec<Xoshiro256ss> = (0..banks.len())
+        .map(|b| {
+            let k = if mp.common_random_numbers { 0 } else { b as u64 + 1 };
+            Xoshiro256ss::from_seed(filter_seed.wrapping_add(k.wrapping_mul(0xD1B5_4A32_D192_ED03)))
+        })
+        .collect();
 
     // ---- 2. FILTERING LOOP (track[1..]) ------------------------------------
     // Each bank is an ordinary particle filter under its own goal-conditioned
@@ -653,6 +1070,11 @@ pub fn predict_with(
     // prior with the goal-switching hazard (so a retargeting UAV is followed).
     let filter_speed_noise = cfg.speed_noise_mps.max(mp.filter_speed_noise_floor);
     let mut recoveries = 0u32;
+    // Two-stage intent state: P(hypothesis), the previous filter summary and
+    // the history of loop-centre estimates.
+    let mut intent_probs: Vec<f64> = hypotheses.iter().map(|h| h.1).collect();
+    let mut summaries: Vec<Summary> = Vec::new();
+    let mut win_start = 0usize; // index into `summaries` of the open window
     for i in 1..track.len() {
         let obs = &track[i];
         let dt = obs.t - track[i - 1].t;
@@ -668,17 +1090,30 @@ pub fn predict_with(
         let c = obs.cov[2] + mp.meas_floor_m2;
         let det = (a * c - b * b).max(1e-9);
 
+        // Outlier component: the same, widened by outlier_sigma_m. The log
+        // likelihood is the log of the two-component mixture (the 2*pi is
+        // common to every particle and bank and is dropped).
+        let so2 = mp.outlier_sigma_m * mp.outlier_sigma_m;
+        let (ao, co) = (a + so2, c + so2);
+        let det_o = (ao * co - b * b).max(1e-9);
+        let eps = mp.outlier_prob.clamp(0.0, 0.999);
+        let ln_in = (1.0 - eps).ln() - 0.5 * det.ln();
+        let ln_out = if eps > 0.0 { eps.ln() - 0.5 * det_o.ln() } else { f64::NEG_INFINITY };
+
         let mut min_d2 = f64::INFINITY;
-        for bank in banks.iter_mut() {
+        for (bank, brng) in banks.iter_mut().zip(bank_rngs.iter_mut()) {
             for p in bank.particles.iter_mut() {
                 for _ in 0..n_sub {
-                    p.step(mp, h, filter_speed_noise, p_turn, oois, &no_switch, &mut rng, ttc);
+                    p.step(mp, h, filter_speed_noise, p_turn, oois, &no_switch, brng, ttc);
                 }
                 let ex = p.x - obs.pos[0];
                 let ey = p.y - obs.pos[1];
                 let d2 = (c * ex * ex - 2.0 * b * ex * ey + a * ey * ey) / det;
+                let d2o = (co * ex * ex - 2.0 * b * ex * ey + ao * ey * ey) / det_o;
                 min_d2 = min_d2.min(d2);
-                p.log_w += -0.5 * d2;
+                let (l1, l2) = (ln_in - 0.5 * d2, ln_out - 0.5 * d2o);
+                let m = l1.max(l2);
+                p.log_w += m + ((l1 - m).exp() + (l2 - m).exp()).ln();
             }
         }
 
@@ -687,19 +1122,58 @@ pub fn predict_with(
         // observation carries no usable evidence between the goals.
         if min_d2 > mp.recovery_d2 {
             recoveries += 1;
-            for bank in banks.iter_mut() {
-                reseed(&mut bank.particles, &track[i - 1], obs, mp, &mut rng, ttc);
+            for (bank, brng) in banks.iter_mut().zip(bank_rngs.iter_mut()) {
+                reseed(&mut bank.particles, &track[i - 1], obs, mp, brng, ttc);
             }
             continue;
         }
 
         let mut log_l = Vec::with_capacity(banks.len());
+        let mut need_resample = false;
         for bank in banks.iter_mut() {
             log_l.push(normalise(&mut bank.particles));
-
             let sum_sq: f64 = bank.particles.iter().map(|p| p.weight * p.weight).sum();
-            if 1.0 / sum_sq < bank.particles.len() as f64 / 2.0 {
-                resample_by_mode(&mut bank.particles, mp, &mut rng);
+            need_resample |= 1.0 / sum_sq < bank.particles.len() as f64 / 2.0;
+        }
+        let score_bank = if mp.intent_two_stage {
+            Some(0)
+        } else if mp.intent_hybrid {
+            banks.iter().position(|b| b.goal.is_none())
+        } else {
+            None
+        };
+        if let Some(sb) = score_bank {
+            summaries.push(summarise(&banks[sb].particles, obs.t));
+            // Retargeting hazard every step; evidence once per closed window.
+            let hazard = 1.0 - (-mp.goal_switch_rate * dt).exp();
+            for (k, p) in intent_probs.iter_mut().enumerate() {
+                *p = (1.0 - hazard) * *p + hazard * hypotheses[k].1;
+            }
+            let last = summaries.len() - 1;
+            if summaries[last].t - summaries[win_start].t >= mp.intent_window_s - 1e-6 {
+                let win = &summaries[win_start..=last];
+                let ll: Vec<f64> =
+                    hypotheses.iter().map(|&(goal, _)| intent_log_lik(win, goal, oois, mp, ttc)).collect();
+                let max_l = ll.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                if max_l.is_finite() {
+                    let mut z = 0.0;
+                    for (k, p) in intent_probs.iter_mut().enumerate() {
+                        *p *= (mp.intent_power * (ll[k] - max_l)).exp();
+                        z += *p;
+                    }
+                    for p in intent_probs.iter_mut() {
+                        *p /= z;
+                    }
+                }
+                win_start = last;
+            }
+        }
+
+        // Resample every bank at the same steps (keeps the common random
+        // streams aligned).
+        if need_resample {
+            for (bank, brng) in banks.iter_mut().zip(bank_rngs.iter_mut()) {
+                resample_by_mode(&mut bank.particles, mp, brng);
             }
         }
 
@@ -709,12 +1183,21 @@ pub fn predict_with(
             let mut z = 0.0;
             for (bank, &ll) in banks.iter_mut().zip(log_l.iter()) {
                 let p_pred = (1.0 - hazard) * bank.prob + hazard * bank.prior;
-                bank.prob = p_pred * (ll - max_l).exp();
+                bank.prob = p_pred * (mp.goal_evidence_power * (ll - max_l)).exp();
                 z += bank.prob;
             }
             for bank in banks.iter_mut() {
                 bank.prob /= z;
             }
+        }
+    }
+
+    let hybrid = !mp.intent_two_stage && mp.intent_hybrid && banks.iter().any(|b| b.goal.is_none());
+    if hybrid {
+        // Mix the per-goal filters by the two-stage P(goal).
+        for bank in banks.iter_mut() {
+            let k = hypotheses.iter().position(|h| h.0 == bank.goal).unwrap();
+            bank.prob = intent_probs[k];
         }
     }
 
@@ -737,6 +1220,14 @@ pub fn predict_with(
         }
     }
     let omega_est = if turn_prob > 0.0 { omega_turn_sum / turn_prob } else { 0.0 };
+    if mp.intent_two_stage || hybrid {
+        goal_probs = vec![0.0; oois.len()];
+        for (k, &(goal, _)) in hypotheses.iter().enumerate() {
+            if let Some(g) = goal {
+                goal_probs[g] += intent_probs[k];
+            }
+        }
+    }
 
     // ---- 4. PREDICTION FAN ------------------------------------------------
     // Draw n_samples equally weighted particles across the banks in proportion
@@ -759,8 +1250,26 @@ pub fn predict_with(
         rest -= 1;
     }
     let mut fan: Vec<Particle> = Vec::with_capacity(n_samples);
-    for (bank, &n_k) in banks.iter().zip(alloc.iter()) {
-        fan.extend(resample_n(&bank.particles, n_k, &mut rng));
+    if mp.intent_two_stage {
+        // Draw from the goal-free filter, then give each particle a goal
+        // label drawn from the intent posterior.
+        fan = resample_n(&banks[0].particles, n_samples, &mut rng);
+        for p in fan.iter_mut() {
+            let u = rng.next_f64();
+            let mut acc = 0.0;
+            p.goal = None;
+            for (k, &(goal, _)) in hypotheses.iter().enumerate() {
+                acc += intent_probs[k];
+                if u < acc {
+                    p.goal = goal;
+                    break;
+                }
+            }
+        }
+    } else {
+        for (bank, &n_k) in banks.iter().zip(alloc.iter()) {
+            fan.extend(resample_n(&bank.particles, n_k, &mut rng));
+        }
     }
 
     let mut counts = vec![0u64; n_bins];

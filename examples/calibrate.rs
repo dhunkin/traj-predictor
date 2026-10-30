@@ -23,36 +23,7 @@ use common::calib::*;
 use predictor::particle::ModelParams;
 
 fn set(mp: &mut ModelParams, key: &str, v: f64) {
-    match key {
-        "cruise_tau_s" => mp.cruise_tau_s = v,
-        "cruise_omega_sigma" => {
-            mp.cruise_omega_sigma_min = v;
-            mp.cruise_omega_sigma_max = v;
-        }
-        "cruise_omega_sigma_min" => mp.cruise_omega_sigma_min = v,
-        "cruise_omega_sigma_max" => mp.cruise_omega_sigma_max = v,
-        "turn_omega_walk" => mp.turn_omega_walk = v,
-        "omega_turn_min" => mp.omega_turn_min = v,
-        "turn_entry_sigma" => mp.turn_entry_sigma = v,
-        "mode_switch_rate" => mp.mode_switch_rate = v,
-        "turn_persistence_s" => mp.turn_persistence_s = v,
-        "goal_switch_rate" => mp.goal_switch_rate = v,
-        "k_goal" => mp.k_goal = v,
-        "k_course" => mp.k_course = v,
-        "course_walk" => mp.course_walk = v,
-        "p_weave" => mp.p_weave = v,
-        "weave_tau_s" => mp.weave_tau_s = v,
-        "weave_noise" => mp.weave_noise = v,
-        "weave_freq_min" => mp.weave_freq_min = v,
-        "weave_freq_max" => mp.weave_freq_max = v,
-        "recovery_d2" => mp.recovery_d2 = v,
-        "goal_drift_frac" => mp.goal_drift_frac = v,
-        "omega_loop" => mp.omega_loop = v,
-        "filter_speed_noise_floor" => mp.filter_speed_noise_floor = v,
-        "min_mode_share" => mp.min_mode_share = v,
-        "meas_floor_m2" => mp.meas_floor_m2 = v,
-        _ => panic!("unknown ModelParams field: {key}"),
-    }
+    mp.set(key, v).unwrap_or_else(|e| panic!("{e}"));
 }
 
 fn main() {

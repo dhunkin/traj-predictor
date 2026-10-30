@@ -24,9 +24,14 @@ fn main() {
         ("orbit, OOI behind drift", Trajectory::Orbit { radius_m: 20.0, omega: 0.4, drift_mps: 0.6, drift_dir: 0.0 }, 12.0, [-100.0, 0.0]),
         ("orbit, OOI ahead of drift", Trajectory::Orbit { radius_m: 20.0, omega: 0.4, drift_mps: 0.6, drift_dir: 0.0 }, 12.0, [150.0, 0.0]),
         ("straight, OOI ahead", Trajectory::Straight { psi0: 0.0 }, 12.0, [550.0, 0.0]),
+        // Second round of manual tests (OOI off to the side).
+        ("sine, OOI (250,100)", Trajectory::Sine { wavelength_m: 100.0, amplitude_m: 20.0, direction: 0.0 }, 12.0, [250.0, 100.0]),
+        ("spiral, OOI (250,100)", Trajectory::Spiral { r0: 10.0, r_growth: 1.0, turns: 3.0 }, 12.0, [250.0, 100.0]),
+        ("orbit, OOI (250,100)", Trajectory::Orbit { radius_m: 20.0, omega: 0.4, drift_mps: 0.6, drift_dir: 0.0 }, 12.0, [250.0, 100.0]),
+        ("straight, OOI (550,100)", Trajectory::Straight { psi0: 0.0 }, 12.0, [550.0, 100.0]),
     ];
     let (dur, hor, speed) = (30.0, 10.0, 12.0);
-    println!("{:<27} {:>4} {:>4} {:>7} {:>6} {:>6} {:>6} {:>6} {:>10} {:>4}  limits", "case", "in50", "in90", "bias°", "w90°", "Pgoal", "Pturn", "v_est", "lag m/v", "rec");
+    println!("{:<27} {:>4} {:>4} {:>7} {:>6} {:>6} {:>6} {:>6} {:>10} {:>4} {:>5}  limits", "case", "in50", "in90", "bias°", "w90°", "Pgoal", "Pturn", "v_est", "lag m/v", "rec", "loop%");
     for (name, traj, v_max, ooi) in cases {
         // A negative third field means: v_max 12 with that a_lat instead of 9.
         let (v_max, a_lat) = if v_max < 0.0 { (12.0, -v_max) } else { (v_max, 9.0) };
@@ -40,11 +45,22 @@ fn main() {
         let brg = (b[1] - a[1]).atan2(b[0] - a[0]);
         let inside = |s: f64, w: f64| (brg - s).rem_euclid(2.0 * PI) < w;
         let bias = ((p.final_heading_mean - brg + PI).rem_euclid(2.0 * PI) - PI).to_degrees();
+        // Share of predicted paths that turn through more than a full circle
+        // within the horizon (sum of absolute heading changes > 2 pi).
+        let loops = p.path_cloud.iter().filter(|path| {
+            let mut tot = 0.0;
+            for w in path.windows(3) {
+                let a1 = (w[1][1] - w[0][1]).atan2(w[1][0] - w[0][0]);
+                let a2 = (w[2][1] - w[1][1]).atan2(w[2][0] - w[1][0]);
+                tot += ((a2 - a1 + PI).rem_euclid(2.0 * PI) - PI).abs();
+            }
+            tot > 2.0 * PI
+        }).count() as f64 / p.path_cloud.len() as f64 * 100.0;
         let lag = p.path_cloud.iter().map(|q| ((q[0][0] - a[0]).powi(2) + (q[0][1] - a[1]).powi(2)).sqrt()).sum::<f64>() / p.path_cloud.len() as f64;
         println!(
-            "{:<27} {:>4} {:>4} {:>+7.0} {:>6.0} {:>6.2} {:>6.2} {:>6.1} {:>5.1}/{:<4.1} {:>4}  {}",
+            "{:<27} {:>4} {:>4} {:>+7.0} {:>6.0} {:>6.2} {:>6.2} {:>6.1} {:>5.1}/{:<4.1} {:>4} {:>5.0}  {}",
             name, inside(p.sector50_start, p.sector50) as u8, inside(p.sector90_start, p.sector90) as u8, bias,
-            p.sector90.to_degrees(), p.goal_probs[0], p.turn_prob, p.v_est, lag, va, p.recoveries,
+            p.sector90.to_degrees(), p.goal_probs[0], p.turn_prob, p.v_est, lag, va, p.recoveries, loops,
             check_limits(&traj, dur + hor, speed, &ttc).join("; ")
         );
     }
