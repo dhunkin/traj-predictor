@@ -1,9 +1,13 @@
-// web/demo.js — Stage 1 client/server heading-prediction demo.
+// web/demo.js — client for the heading-prediction server.
 //
 // Maps the predictor core (Rust backend) onto a MapLibre GL JS map with a
 // canvas overlay ("fan") that draws the track, point cloud, histogram fan,
-// and 50%/90% sector contours. The prediction and simulation logic now runs
-// in the Rust server over HTTP/JSON; the browser talks to it via fetch.
+// and 50%/90% sector contours. The prediction and simulation logic runs in
+// the Rust server over HTTP/JSON; the browser talks to it via fetch.
+//
+// Two ways to get a track: "Simulated track" (an analytic test trajectory
+// from the server) or "Live flight" (a fixed-wing drone flown with the arrow
+// keys, predicted continuously and scored against where it really went).
 //
 // Anchoring: scenario-local metres are converted to lng/lat relative to an
 // arbitrary anchor point, then map.project() turns lng/lat into screen px.
@@ -20,6 +24,14 @@ const API_BASE = (() => {
 const ANCHOR_LNG = -79.4;
 const ANCHOR_LAT = 43.7;
 const METER_PER_DEG_LAT = 111320.0;
+
+// Inverse of metersToLngLat: map clicks -> scenario metres.
+function lngLatToMeters(lng, lat) {
+  return [
+    (lng - ANCHOR_LNG) * METER_PER_DEG_LAT * Math.cos(ANCHOR_LAT * Math.PI / 180),
+    (lat - ANCHOR_LAT) * METER_PER_DEG_LAT,
+  ];
+}
 
 function metersToLngLat(x, y) {
   const lat = ANCHOR_LAT + y / METER_PER_DEG_LAT;
@@ -54,6 +66,21 @@ const map = new maplibregl.Map({
 // ---- Zoom controls (FIX 1) -----------------------------------------------
 map.addControl(new maplibregl.NavigationControl(), 'top-left');
 
+// Metric scale bar (updates with zoom). Scenario metres are placed on the map
+// around the anchor with a local flat-earth conversion, so at these distances
+// the bar measures the same metres as the predictor works in.
+map.addControl(new maplibregl.ScaleControl({ maxWidth: 160, unit: 'metric' }), 'bottom-left');
+
+// Keep the bottom-left controls (the scale) just above the stats bar, whose
+// height changes when it wraps onto two lines.
+const statsBar = document.getElementById('stats');
+function liftBottomControls() {
+  const corner = document.querySelector('.maplibregl-ctrl-bottom-left');
+  if (corner) corner.style.bottom = statsBar.offsetHeight + 'px';
+}
+new ResizeObserver(liftBottomControls).observe(statsBar);
+liftBottomControls();
+
 // ---- Canvas overlay --------------------------------------------------------
 const fan = document.getElementById('fan');
 const ctx = fan.getContext('2d');
@@ -78,6 +105,7 @@ const inputs = {
   horizon_s: 'horizon_s', duration_s: 'duration_s', n_samples: 'n_samples',
   p_turn: 'p_turn', speed_noise_mps: 'speed_noise_mps', azimuth_bins: 'azimuth_bins', sim_speed: 'sim_speed',
   intent_hypothesis_prob: 'intent_hypothesis_prob',
+  fly_x: 'fly_x', fly_y: 'fly_y', fly_heading: 'fly_heading', fly_noise: 'fly_noise',
 };
 function val(id) { return parseFloat(el(inputs[id]).value); }
 function status(msg) { el('status').textContent = msg; }
@@ -86,13 +114,69 @@ function status(msg) { el('status').textContent = msg; }
 let observations = []; // {t, x, y, cov_xx, cov_xy, cov_yy, v, psi}
 let true_future = []; // the analytic truth past duration_s (for the dashed line)
 let pred = null;
-// OOIs (objects of interest), read live from the OOI inputs so the red
-// circle is visible as soon as a track is simulated (and follows edits).
-function currentOois() {
-  const x = Number(el('ooi_x').value);
-  const y = Number(el('ooi_y').value);
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return [];
-  return [{ x, y }];
+// OOIs (objects of interest): each one is a goal hypothesis the filter tests.
+// Edited in the panel list or placed by clicking the map ("+ Add on map").
+// Each OOI gets its own sub-filter, sharing n_samples, so keep it to a few.
+const MAX_OOIS = 6;
+let oois = [{ x: 350, y: 0 }];
+let addingOoi = false;
+// The OOIs the last prediction was made with, so their P(goal) labels stay
+// attached to the right points even while the list is being edited.
+let predOois = [];
+function currentOois() { return oois.map((o) => ({ x: o.x, y: o.y })); }
+
+// P(goal) of OOI i from the last prediction, or null if the list changed.
+function goalProbOf(i) {
+  if (!pred || !pred.goal_probs || predOois.length !== oois.length) return null;
+  const o = oois[i], q = predOois[i];
+  return o.x === q.x && o.y === q.y ? pred.goal_probs[i] : null;
+}
+
+function renderOoiList() {
+  const list = el('ooi-list');
+  list.innerHTML = '';
+  oois.forEach((o, i) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const name = document.createElement('label');
+    name.textContent = 'OOI ' + (i + 1);
+    name.dataset.tip = 'Position (m) of this object of interest: x east, y north. Each OOI is a separate goal hypothesis; the red number is its P(goal).';
+    const mk = (key) => {
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.step = '10';
+      inp.value = o[key];
+      inp.addEventListener('input', () => {
+        const v = Number(inp.value);
+        if (Number.isFinite(v)) { oois[i][key] = v; draw(); }
+      });
+      return inp;
+    };
+    const pg = document.createElement('span');
+    pg.className = 'pg';
+    const p = goalProbOf(i);
+    pg.textContent = p === null ? '' : p.toFixed(2);
+    const del = document.createElement('button');
+    del.textContent = '×';
+    del.title = 'Remove this OOI';
+    del.addEventListener('click', () => { oois.splice(i, 1); renderOoiList(); draw(); });
+    row.append(name, mk('x'), mk('y'), pg, del);
+    list.appendChild(row);
+  });
+  if (!oois.length) {
+    const none = document.createElement('div');
+    none.className = 'hint';
+    none.textContent = 'No OOIs: the filter only tests "no goal".';
+    list.appendChild(none);
+  }
+  el('btn_add_ooi').disabled = oois.length >= MAX_OOIS;
+}
+
+function setAddingOoi(on) {
+  addingOoi = on && oois.length < MAX_OOIS;
+  el('btn_add_ooi').classList.toggle('active', addingOoi);
+  el('btn_add_ooi').textContent = addingOoi ? 'Click the map… (Esc)' : '+ Add on map';
+  map.getCanvas().style.cursor = addingOoi ? 'crosshair' : '';
 }
 // Last observation, hoisted to module scope so predict() can use it
 // regardless of handler scope (fixes "last is not defined" on Predict).
@@ -116,6 +200,31 @@ async function apiPost(path, payload) {
 // ---- Rendering -------------------------------------------------------------
 function draw() {
   ctx.clearRect(0, 0, fan.width, fan.height);
+  drawScene();
+  drawOois();
+  drawFlight();
+}
+
+// OOIs as red circles, labelled with their P(goal) from the last prediction.
+function drawOois() {
+  oois.forEach((o, i) => {
+    const [px, py] = metersToScreen(o.x, o.y);
+    ctx.beginPath();
+    ctx.fillStyle = 'red';
+    ctx.arc(px, py, 8, 0, Math.PI * 2);
+    ctx.fill();
+    const p = goalProbOf(i);
+    const label = 'OOI ' + (i + 1) + (p === null ? '' : '  ' + p.toFixed(2));
+    ctx.font = 'bold 12px sans-serif';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.strokeText(label, px + 11, py + 4);
+    ctx.fillStyle = '#b00';
+    ctx.fillText(label, px + 11, py + 4);
+  });
+}
+
+function drawScene() {
   const showTrack = el('show_track').checked;
   const showCloud = el('show_cloud').checked;
   const showRibbon = el('show_paths').checked;
@@ -139,22 +248,6 @@ function draw() {
 
   if (!lastObservation) return;
   const last = lastObservation;
-
-  // OOIs: render the goal points the backend used as large red circles so we
-  // can see where the prediction fan is being steered toward.
-  const oois = currentOois();
-  if (oois.length > 0) {
-    for (const o of oois) {
-      const [px, py] = metersToScreen(o.x, o.y);
-      ctx.beginPath();
-      ctx.fillStyle = 'red';
-      ctx.arc(px, py, 8, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#b00';
-      ctx.font = 'bold 12px sans-serif';
-      ctx.fillText('OOI', px + 10, py + 5);
-    }
-  }
 
   // True Future: the analytic truth past duration_s, drawn as a dashed black
   // line from the last observation to the end of truth. Drawn first so the fan
@@ -358,6 +451,7 @@ function populateTrajParams() {
 
 // ---- Actions ---------------------------------------------------------------
 async function simulate() {
+  if (flight.on) stopFlight();
   await W(async () => {
     const seed = BigInt(val('seed') | 0);
     const speed = val('sim_speed');
@@ -455,88 +549,413 @@ async function simulate() {
   });
 }
 
+// POST the track to /api/predict with the current settings and OOIs.
+async function requestPrediction(track, ooiList) {
+  const last = track[track.length - 1];
+  const obsDto = (o) => ({
+    t: o.t, x: o.x, y: o.y, v: o.v, psi: o.psi,
+    cov_xx: o.cov_xx, cov_xy: o.cov_xy, cov_yy: o.cov_yy,
+  });
+  // Send the full observation track; the server runs the particle filter
+  // over it (positions + covariances only) and fans forward from the result.
+  return apiPost('/api/predict', {
+    ttc: {
+      v_min: val('v_min'),
+      v_max: val('v_max'),
+      a_lat: val('a_lat'),
+      a_long: val('a_long'),
+      omega_cap: val('omega_cap'),
+    },
+    track: track.map(obsDto),
+    last_observation: obsDto(last),
+    oois: ooiList,
+    config: {
+      horizon_s: val('horizon_s'),
+      n_samples: val('n_samples'),
+      dt_s: 1.0,
+      p_turn: val('p_turn'),
+      azimuth_bins: Math.round(val('azimuth_bins')),
+      speed_noise_mps: val('speed_noise_mps'),
+      intent_hypothesis_prob: val('intent_hypothesis_prob'),
+      seed: Number(val('seed') | 0),
+    },
+  });
+}
+
+// Store a prediction response, fill the stats bar and redraw. `apex` is the
+// last observation the prediction was made from (the fan's origin).
+function applyPrediction(res, apex, ooiList, t0) {
+  pred = {
+    bin_centers: res.bin_centers,
+    bin_probs: res.bin_probs,
+    point_cloud: res.point_cloud,
+    path_cloud: res.path_cloud, // [[ [x,y], ... ], ...] one polyline per particle
+    path_goal: res.path_goal, // per path: OOI index, or -1 for no goal
+    goal_probs: res.goal_probs, // per OOI
+    final_heading_mean: res.heading_mean,
+    sector50: res.sector50,
+    sector90: res.sector90,
+    sector50_start: res.sector50_start,
+    sector90_start: res.sector90_start,
+    v_est: res.v_est,
+  };
+  predOois = ooiList;
+  lastObservation = apex;
+
+  // Stats (radians -> degrees).
+  el('s50').textContent = (pred.sector50 * 180 / Math.PI).toFixed(1);
+  el('s90').textContent = (pred.sector90 * 180 / Math.PI).toFixed(1);
+  el('smean').textContent = (pred.final_heading_mean * 180 / Math.PI).toFixed(1);
+  el('selapsed').textContent = Math.round(performance.now() - t0);
+  // Posterior intent, summed over OOIs (per-OOI values label the map).
+  const pGoal = res.goal_probs.reduce((a, p) => a + p, 0);
+  el('sgoal').textContent = ooiList.length ? pGoal.toFixed(2) : '—';
+  el('sturn').textContent = res.turn_prob.toFixed(2);
+  el('svest').textContent = res.v_est.toFixed(1);
+  const nz = pred.bin_probs.reduce((a, p) => a + (p > 0 ? 1 : 0), 0);
+  el('snz').textContent = nz;
+  renderOoiList();
+  draw();
+}
+
 async function predict() {
   await W(async () => {
-    if (!lastObservation) {
-      console.warn('Predict pressed before Simulate; ignoring');
-      status('simulate first');
+    if (!observations.length) {
+      status('simulate a track (or start a flight) first');
       return;
     }
-    const last = lastObservation;
-    const azimuthBins = Math.round(val('azimuth_bins'));
+    if (observations.length < 2) {
+      status('need at least 2 observations');
+      return;
+    }
     const t0 = performance.now();
-
-    const oois = currentOois();
-
-    // Send the full observation track; the server runs the particle filter
-    // over it (positions + covariances only) and fans forward from the result.
-    // `last_observation` is kept as the last point for backward compat.
-    const res = await apiPost('/api/predict', {
-      ttc: {
-        v_min: val('v_min'),
-        v_max: val('v_max'),
-        a_lat: val('a_lat'),
-        a_long: val('a_long'),
-        omega_cap: val('omega_cap'),
-      },
-      track: observations.map((o) => ({
-        t: o.t, x: o.x, y: o.y, v: o.v, psi: o.psi,
-        cov_xx: o.cov_xx, cov_xy: o.cov_xy, cov_yy: o.cov_yy,
-      })),
-      last_observation: {
-        t: last.t,
-        x: last.x,
-        y: last.y,
-        v: last.v,
-        psi: last.psi,
-        cov_xx: last.cov_xx,
-        cov_xy: last.cov_xy,
-        cov_yy: last.cov_yy,
-      },
-      oois,
-      config: {
-        horizon_s: val('horizon_s'),
-        n_samples: val('n_samples'),
-        dt_s: 1.0,
-        p_turn: val('p_turn'),
-        azimuth_bins: azimuthBins,
-        speed_noise_mps: val('speed_noise_mps'),
-        intent_hypothesis_prob: val('intent_hypothesis_prob'),
-        seed: Number(val('seed') | 0),
-      },
-    });
-
-    pred = {
-      bin_centers: res.bin_centers,
-      bin_probs: res.bin_probs,
-      point_cloud: res.point_cloud,
-      path_cloud: res.path_cloud, // [[ [x,y], ... ], ...] one polyline per particle
-      path_goal: res.path_goal, // per path: OOI index, or -1 for no goal
-      final_heading_mean: res.heading_mean,
-      sector50: res.sector50,
-      sector90: res.sector90,
-      sector50_start: res.sector50_start,
-      sector90_start: res.sector90_start,
-      v_est: res.v_est,
-    };
-
-    // Stats (radians -> degrees).
-    el('s50').textContent = (pred.sector50 * 180 / Math.PI).toFixed(1);
-    el('s90').textContent = (pred.sector90 * 180 / Math.PI).toFixed(1);
-    el('smean').textContent = (pred.final_heading_mean * 180 / Math.PI).toFixed(1);
-    el('selapsed').textContent = Math.round(performance.now() - t0);
-    // Posterior intent: if this does not move with the data, inference is broken.
-    const pGoal = res.goal_probs.reduce((a, p) => a + p, 0);
-    el('sgoal').textContent = oois.length ? pGoal.toFixed(2) : '—';
-    el('sturn').textContent = res.turn_prob.toFixed(2);
-    el('svest').textContent = res.v_est.toFixed(1);
-    // FIX 4c: n_bins_nonzero stat.
-    const nz = pred.bin_probs.reduce((a, p) => a + (p > 0 ? 1 : 0), 0);
-    el('snz').textContent = nz;
-
-    draw();
+    const ooiList = currentOois();
+    const res = await requestPrediction(observations, ooiList);
+    applyPrediction(res, observations[observations.length - 1], ooiList, t0);
     status('prediction complete');
   });
+}
+
+// ---- Live flight -------------------------------------------------------------
+// A fixed-wing drone flown with the arrow keys. Physics: the bank angle rolls
+// toward the commanded bank at ROLL_RATE; the bank limit is atan(a_lat / g),
+// so the turn rate g*tan(bank)/v respects a_lat (and is capped by omega_cap).
+// Speed changes at a_long while Up/Down is held, within [v_min, v_max]; it
+// never hovers. A sensor reports a noisy position every OBS_DT seconds; the
+// last duration_s seconds are sent to the predictor after every report.
+//
+// Live scoring: every prediction made at time t is checked at t + horizon_s:
+// is the bearing from the drone's true position at t to its true position
+// now inside the predicted 50% / 90% sector? A calibrated predictor hits
+// about 50% and 90% of the time. Each check also gets a log score (-ln of the
+// fan's density at the true bearing; a uniform fan scores ln(2 pi) = 1.84),
+// which rewards a fan for being both sharp and right.
+//
+// Honest sample size: predictions one second apart with a 10 s horizon
+// overlap, so consecutive checks are strongly correlated. The effective
+// number of independent checks is about one per horizon of flight, and the
+// hit rates carry a 90% Wilson interval computed from that number.
+const G = 9.81;
+const ROLL_RATE = 60 * Math.PI / 180; // rad/s
+const OBS_DT = 1.0; // s between sensor reports
+const PHYS_DT = 0.02; // s, integration step
+const TRUTH_DT = 0.1; // s between recorded true states
+
+const flight = {
+  on: false,
+  paused: false,
+  t: 0, x: 0, y: 0, psi: 0, v: 0, bank: 0, omega: 0,
+  keys: { left: false, right: false, up: false, down: false },
+  truth: [], // {t, x, y, psi, v, bank} every TRUTH_DT
+  obs: [], // every sensor report (the predictor gets the recent window)
+  nextObs: 0,
+  inflight: false, // a prediction request is running
+  checks: [], // predictions waiting to be scored
+  scored: [], // scored predictions (exported with the flight)
+  hits: { n: 0, h50: 0, h90: 0, sumLog: 0, tFirst: 0, tLast: 0 },
+  lastFrame: 0,
+};
+
+const LOG_UNIFORM = Math.log(2 * Math.PI); // log score of a uniform fan
+
+// Log score of a prediction: -ln(density per radian) of its direction
+// histogram at the true bearing, with 1% of the mass spread uniformly so a
+// miss costs a bounded amount (the harness in tests/common/calib.rs does the
+// same).
+function logScore(binProbs, bearing) {
+  const n = binProbs.length;
+  const width = 2 * Math.PI / n;
+  const a = ((bearing % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+  const j = Math.min(n - 1, Math.floor(a / width));
+  return -Math.log((0.99 * binProbs[j] + 0.01 / n) / width);
+}
+
+// Effective number of independent checks: about one per horizon of flight
+// spanned by the scored predictions.
+function effectiveN(h) {
+  if (!h.n) return 0;
+  return Math.min(h.n, (h.tLast - h.tFirst) / Math.max(val('horizon_s'), 1e-9) + 1);
+}
+
+// 90% Wilson interval of a hit rate k/n, evaluated at the effective sample
+// size (so correlated checks do not pass for more evidence than they are).
+function wilson90(k, n, nEff) {
+  if (!n || nEff <= 0) return [0, 1];
+  const z = 1.645, p = k / n, m = nEff;
+  const c = (p + z * z / (2 * m)) / (1 + z * z / m);
+  const h = z * Math.sqrt(p * (1 - p) / m + z * z / (4 * m * m)) / (1 + z * z / m);
+  return [Math.max(0, c - h), Math.min(1, c + h)];
+}
+
+function gauss() {
+  // Box-Muller.
+  const u = 1 - Math.random(), v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+function startFlight() {
+  if (flight.on) stopFlight();
+  const vMin = val('v_min'), vMax = val('v_max');
+  Object.assign(flight, {
+    on: true, paused: false,
+    t: 0, x: val('fly_x'), y: val('fly_y'), psi: val('fly_heading') * Math.PI / 180,
+    v: (vMin + vMax) / 2, bank: 0, omega: 0,
+    truth: [], obs: [], nextObs: 0, inflight: false,
+    checks: [], scored: [], hits: { n: 0, h50: 0, h90: 0, sumLog: 0, tFirst: 0, tLast: 0 }, lastFrame: 0,
+  });
+  flight.truth.push(trueState());
+  observations = [];
+  true_future = [];
+  pred = null;
+  lastObservation = null;
+  predOois = [];
+  setAddingOoi(false);
+  map.keyboard.disable(); // the arrow keys fly the drone, not the map
+  map.jumpTo({ center: metersToLngLat(flight.x, flight.y) });
+  el('btn_fly').textContent = 'Stop flight';
+  el('btn_download').disabled = true;
+  for (const id of ['slive50', 'slive90', 'slogs', 'sneff']) el(id).textContent = '—';
+  status('flying — use the arrow keys');
+  el('status').style.color = '';
+  requestAnimationFrame(frame);
+}
+
+function stopFlight() {
+  flight.on = false;
+  map.keyboard.enable();
+  el('btn_fly').textContent = 'Start flight';
+  el('btn_download').disabled = flight.truth.length < 2;
+  status('flight stopped' + (flight.hits.n ? ' — ' + hitSummary() : ''));
+}
+
+function trueState() {
+  const f = flight;
+  return { t: f.t, x: f.x, y: f.y, psi: f.psi, v: f.v, bank: f.bank };
+}
+
+function stepPhysics(dt) {
+  const f = flight;
+  const vMin = val('v_min'), vMax = val('v_max');
+  const bankMax = Math.atan(Math.max(val('a_lat'), 0) / G);
+  const target = f.keys.left && !f.keys.right ? bankMax
+    : f.keys.right && !f.keys.left ? -bankMax : 0;
+  const db = target - f.bank;
+  f.bank += Math.max(-ROLL_RATE * dt, Math.min(ROLL_RATE * dt, db));
+  const aLong = Math.max(val('a_long'), 0);
+  if (f.keys.up) f.v += aLong * dt;
+  if (f.keys.down) f.v -= aLong * dt;
+  f.v = Math.max(vMin, Math.min(vMax, f.v));
+  const cap = Math.max(val('omega_cap'), 0);
+  f.omega = Math.max(-cap, Math.min(cap, G * Math.tan(f.bank) / Math.max(f.v, 0.1)));
+  // Exact arc over the step (chord identity).
+  const half = 0.5 * f.omega * dt;
+  const sinc = Math.abs(half) < 1e-6 ? 1 : Math.sin(half) / half;
+  const chord = f.v * dt * sinc;
+  f.x += chord * Math.cos(f.psi + half);
+  f.y += chord * Math.sin(f.psi + half);
+  f.psi += f.omega * dt;
+  f.t += dt;
+}
+
+// Sensor report: noisy position; then predict on the recent window.
+function addObservation() {
+  const f = flight;
+  const sigma = Math.max(val('fly_noise'), 0);
+  const var_ = Math.max(sigma * sigma, 0.01);
+  const o = {
+    t: f.t, x: f.x + sigma * gauss(), y: f.y + sigma * gauss(), v: 0, psi: 0,
+    cov_xx: var_, cov_xy: 0, cov_yy: var_,
+  };
+  f.obs.push(o);
+  const window = val('duration_s');
+  observations = f.obs.filter((q) => q.t >= f.t - window - 1e-9);
+  if (observations.length >= 3 && !f.inflight) livePredict(observations.slice(), { x: f.x, y: f.y });
+}
+
+async function livePredict(track, truthAtObs) {
+  const f = flight;
+  f.inflight = true;
+  const t0 = performance.now();
+  const ooiList = currentOois();
+  const apex = track[track.length - 1];
+  try {
+    const res = await requestPrediction(track, ooiList);
+    if (!f.on) return;
+    applyPrediction(res, apex, ooiList, t0);
+    f.checks.push({
+      t: apex.t,
+      due: apex.t + val('horizon_s'),
+      from: truthAtObs,
+      s50: res.sector50_start, w50: res.sector50,
+      s90: res.sector90_start, w90: res.sector90,
+      p_goal: res.goal_probs.slice(),
+      p_turn: res.turn_prob,
+      bin_probs: res.bin_probs.slice(),
+    });
+  } catch (e) {
+    status('prediction error: ' + (e && e.message ? e.message : e));
+  } finally {
+    f.inflight = false;
+  }
+}
+
+// Score predictions whose horizon has elapsed against the true position.
+function scoreChecks() {
+  const f = flight;
+  while (f.checks.length && f.checks[0].due <= f.t) {
+    const c = f.checks.shift();
+    const brg = Math.atan2(f.y - c.from.y, f.x - c.from.x);
+    const inside = (start, w) => ((brg - start) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) < w;
+    const in50 = inside(c.s50, c.w50), in90 = inside(c.s90, c.w90);
+    const ls = logScore(c.bin_probs, brg);
+    const h = f.hits;
+    if (!h.n) h.tFirst = c.t;
+    h.tLast = c.t;
+    h.n += 1;
+    if (in50) h.h50 += 1;
+    if (in90) h.h90 += 1;
+    h.sumLog += ls;
+    const { bin_probs, ...rest } = c; // keep exports small
+    f.scored.push({ ...rest, true_bearing: brg, in50, in90, log_score: ls });
+  }
+  if (f.hits.n) {
+    const h = f.hits, nEff = effectiveN(h);
+    const fmt = (k) => {
+      const [lo, hi] = wilson90(k, h.n, nEff);
+      return `${Math.round(100 * k / h.n)}% (${Math.round(100 * lo)}–${Math.round(100 * hi)}%)`;
+    };
+    el('slive50').textContent = fmt(h.h50);
+    el('slive90').textContent = fmt(h.h90);
+    el('slogs').textContent = (h.sumLog / h.n).toFixed(2);
+    el('sneff').textContent = `${h.n} ≈ ${nEff.toFixed(0)} indep.`;
+  }
+}
+
+function hitSummary() {
+  const h = flight.hits;
+  const nEff = effectiveN(h);
+  const pct = (k) => Math.round(100 * k / h.n) + '%';
+  return `live: 50% sector ${pct(h.h50)}, 90% sector ${pct(h.h90)}, log score `
+    + `${(h.sumLog / h.n).toFixed(2)} (uniform ${LOG_UNIFORM.toFixed(2)}) over ${h.n} predictions `
+    + `≈ ${nEff.toFixed(0)} independent`;
+}
+
+function frame(now) {
+  const f = flight;
+  if (!f.on) return;
+  const dtReal = f.lastFrame ? Math.min((now - f.lastFrame) / 1000, 0.1) : 0;
+  f.lastFrame = now;
+  if (!f.paused) {
+    let rem = dtReal;
+    while (rem > 1e-9) {
+      const h = Math.min(PHYS_DT, rem);
+      stepPhysics(h);
+      rem -= h;
+      if (f.t - f.truth[f.truth.length - 1].t >= TRUTH_DT - 1e-9) f.truth.push(trueState());
+      if (f.t >= f.nextObs) {
+        addObservation();
+        f.nextObs += OBS_DT;
+      }
+    }
+    scoreChecks();
+  }
+  el('fly_readout').textContent =
+    `t ${f.t.toFixed(0)} s · v ${f.v.toFixed(1)} m/s · bank ${(f.bank * 180 / Math.PI).toFixed(0)}°`
+    + ` · turn ${(f.omega * 180 / Math.PI).toFixed(1)}°/s${f.paused ? ' · PAUSED' : ''}`;
+  if (el('fly_follow').checked) map.jumpTo({ center: metersToLngLat(f.x, f.y) }); // redraws
+  else draw();
+  requestAnimationFrame(frame);
+}
+
+// The drone's true trail and an arrow at its true position.
+function drawFlight() {
+  const f = flight;
+  if (!f.truth.length) return;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0, 140, 60, 0.75)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  f.truth.forEach((s, i) => {
+    const [px, py] = metersToScreen(s.x, s.y);
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  });
+  const [cx, cy] = metersToScreen(f.x, f.y);
+  ctx.lineTo(cx, cy);
+  ctx.stroke();
+  // Arrow: screen y points down, so the heading's y component flips.
+  const a = -f.psi;
+  const pt = (r, da) => [cx + r * Math.cos(a + da), cy + r * Math.sin(a + da)];
+  const [nx, ny] = pt(13, 0), [lx, ly] = pt(9, 2.5), [rx, ry] = pt(9, -2.5);
+  ctx.beginPath();
+  ctx.moveTo(nx, ny);
+  ctx.lineTo(lx, ly);
+  ctx.lineTo(cx, cy);
+  ctx.lineTo(rx, ry);
+  ctx.closePath();
+  ctx.fillStyle = '#0a8a3a';
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1.5;
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function onKey(e, down) {
+  if (!flight.on) return;
+  const tag = e.target && e.target.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  const map_ = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
+  if (map_[e.key]) {
+    flight.keys[map_[e.key]] = down;
+    e.preventDefault();
+  } else if (down && (e.key === 'p' || e.key === 'P')) {
+    flight.paused = !flight.paused;
+    e.preventDefault();
+  }
+}
+
+// Download the flight as JSON: settings, OOIs, the true path, the sensor
+// reports and every scored prediction — a recorded track for later analysis.
+function downloadFlight() {
+  const f = flight;
+  const settings = {};
+  for (const id of Object.keys(inputs)) settings[id] = val(id);
+  const data = {
+    format: 'traj-predictor flight v1',
+    created: new Date().toISOString(),
+    settings,
+    oois: currentOois(),
+    truth: f.truth,
+    observations: f.obs,
+    predictions: f.scored,
+    hits: { ...f.hits, effective_n: effectiveN(f.hits), mean_log_score: f.hits.n ? f.hits.sumLog / f.hits.n : null },
+  };
+  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'flight-' + data.created.replace(/[:.]/g, '-') + '.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 // ---- Tooltips --------------------------------------------------------------
@@ -557,9 +976,20 @@ const TIPS = {
   p_turn: 'Long-run share of time the model expects the UAV to spend in a sustained turn (orbit / loiter), and the starting P(turn). 1 forbids straight flight.',
   speed_noise_mps: 'How quickly the model lets speed wander, m/s per √s. Larger = more spread along the direction of travel. The filter uses at least 0.1.',
   azimuth_bins: 'Number of direction bins for the fan (72 = 5° each). Sector widths are whole bins.',
-  ooi_x: 'East coordinate (m) of the object of interest — a possible destination the filter tests as a goal hypothesis.',
-  ooi_y: 'North coordinate (m) of the object of interest.',
-  intent_hypothesis_prob: 'Prior probability that the UAV is heading for the OOI (the rest is "no goal"). The filter updates it from the track; the result is P(goal) in the stats bar.',
+  intent_hypothesis_prob: 'Prior probability that the UAV is heading for one of the OOIs (split evenly between them; the rest is "no goal"). The filter updates it from the track.',
+  btn_add_ooi: 'Click, then click the map to place an object of interest. Each OOI is a destination the filter tests as a goal hypothesis. Esc cancels.',
+  btn_clear_ooi: 'Remove all OOIs.',
+  fly_x: 'Where the live flight starts: east (m).',
+  fly_y: 'Where the live flight starts: north (m).',
+  fly_heading: 'Starting heading in degrees: 0 = east, 90 = north (counter-clockwise).',
+  fly_noise: 'Standard deviation (m) of the simulated sensor’s position error. One report per second goes to the predictor.',
+  fly_follow: 'Keep the map centred on the drone.',
+  btn_fly: 'Start a live flight: a fixed-wing drone flown with the arrow keys (← → bank, ↑ ↓ speed, P pause). The predictor runs after every sensor report and each prediction is scored 10 s later.',
+  btn_download: 'Save the flight as JSON: the true path, sensor reports, OOIs, settings and every scored prediction. Recorded flights can become test data.',
+  slive50: 'Live flight: share of predictions whose 50% sector contained where the drone actually went, horizon_s later (target about 50%). In brackets: the 90% uncertainty range given the effective number of independent checks; if it includes 50%, the result is consistent with calibration.',
+  slive90: 'Live flight: share of predictions whose 90% sector contained where the drone actually went (target about 90%), with its 90% uncertainty range from the effective number of independent checks.',
+  slogs: 'Live flight: mean log score of the predictions (-ln of the fan density at the true direction). Lower is better; a uniform "no idea" fan scores 1.84, so anything above that is confidently wrong. Rewards sharp and right together.',
+  sneff: 'Live flight: predictions scored, and about how many independent checks they amount to. Predictions one second apart with a 10 s horizon overlap, so roughly one per horizon of flight counts as independent evidence.',
   show_track: 'Draw the observed positions (dots) and the line through them.',
   show_cloud: 'Draw where each particle ends up at the horizon (grey dots).',
   show_paths: 'Draw a sample of predicted particle paths. Red paths belong to the OOI goal hypothesis, dark grey to "no goal".',
@@ -569,7 +999,7 @@ const TIPS = {
   s50: 'Narrowest arc containing 50% of the predicted directions of travel (net bearing from now to the horizon). Green lines on the map.',
   s90: 'Narrowest arc containing 90% of the predicted directions of travel. Magenta lines on the map.',
   smean: 'Average predicted direction of travel (degrees, 0 = east, counter-clockwise). Can sit between modes when the fan splits.',
-  sgoal: 'Posterior probability that the UAV is heading for the OOI, given the track. If it does not respond to the track, intent inference is not working.',
+  sgoal: 'Posterior probability that the UAV is heading for an OOI, summed over all OOIs; each OOI’s own value labels it on the map. If it does not respond to the track, intent inference is not working.',
   sturn: 'Posterior probability that the UAV is in a sustained turn (orbit / loiter) right now.',
   svest: 'Filtered speed estimate (m/s) at the last observation.',
   selapsed: 'Round-trip time of the last Predict call (ms).',
@@ -625,9 +1055,9 @@ function wireButtons() {
   if (buttonsWired) return;
   buttonsWired = true;
   resizeCanvas();
-  map.on('move', () => { resizeCanvas(); draw(); });
-  map.on('zoom', () => { resizeCanvas(); draw(); });
-  map.on('moveend', () => { resizeCanvas(); draw(); });
+  // Panning does not change the canvas size, so only redraw on move.
+  map.on('move', draw);
+  map.on('resize', () => { resizeCanvas(); draw(); });
   window.addEventListener('resize', () => { resizeCanvas(); draw(); });
   el('btn_sim').addEventListener('click', simulate);
   el('btn_predict').addEventListener('click', predict);
@@ -635,8 +1065,28 @@ function wireButtons() {
   populateTrajParams();
   attachTips();
   el('traj-type').addEventListener('change', populateTrajParams);
-  el('ooi_x').addEventListener('input', draw);
-  el('ooi_y').addEventListener('input', draw);
+  renderOoiList();
+  el('btn_add_ooi').addEventListener('click', () => setAddingOoi(!addingOoi));
+  el('btn_clear_ooi').addEventListener('click', () => { oois = []; renderOoiList(); draw(); });
+  map.on('click', (e) => {
+    if (!addingOoi) return;
+    const [x, y] = lngLatToMeters(e.lngLat.lng, e.lngLat.lat);
+    oois.push({ x: Math.round(x), y: Math.round(y) });
+    renderOoiList();
+    setAddingOoi(false);
+    draw();
+  });
+  el('btn_fly').addEventListener('click', (e) => {
+    e.currentTarget.blur(); // keep the arrow keys for flying
+    if (flight.on) stopFlight(); else startFlight();
+  });
+  el('btn_download').addEventListener('click', downloadFlight);
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && addingOoi) setAddingOoi(false);
+    onKey(e, true);
+  });
+  window.addEventListener('keyup', (e) => onKey(e, false));
+  draw();
   status('Ready.');
 }
 map.on('load', wireButtons);

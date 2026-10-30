@@ -37,7 +37,21 @@
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
       z-index: 5;
       font-size: 13px;
+      /* Scroll inside the panel instead of running off the screen. */
+      max-height: calc(100vh - 90px);
+      overflow-y: auto;
+      box-sizing: border-box;
     }
+    #panel details { border-top: 1px solid #e3e3e3; padding: 4px 0; }
+    #panel summary { cursor: pointer; font-weight: 600; padding: 3px 0; user-select: none; }
+    #panel .hint { font-size: 11px; color: #666; margin: 4px 0; line-height: 1.4; }
+    #panel kbd { border: 1px solid #bbb; border-radius: 3px; padding: 0 3px; font-size: 11px; background: #f6f6f6; }
+    #ooi-list .row label { flex: 1 0 auto; white-space: nowrap; }
+    #ooi-list .row input[type="number"] { width: 54px; }
+    #ooi-list .row button { flex: 0 0 auto; padding: 1px 7px; }
+    #ooi-list .row .pg { width: 34px; text-align: right; color: #b00; font-variant-numeric: tabular-nums; }
+    #btn_add_ooi.active { background: #fde2e2; border-color: #c00; }
+    #fly_readout { font-variant-numeric: tabular-nums; }
     #panel h2 { margin: 0 0 8px; font-size: 15px; }
     #panel .row { display: flex; align-items: center; justify-content: space-between;
                   margin: 5px 0; gap: 8px; }
@@ -57,6 +71,8 @@
       right: 0;
       display: flex;
       justify-content: space-around;
+      flex-wrap: wrap;
+      gap: 2px 16px;
       align-items: center;
       background: rgba(255, 255, 255, 0.96);
       border-top: 1px solid #ddd;
@@ -66,6 +82,17 @@
     }
     #stats .title { font-weight: 600; margin-right: 4px; }
     #stats div { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+
+    /* Scale bar: above the fan overlay, larger and readable on any tiles. */
+    .maplibregl-ctrl-bottom-left { z-index: 3; }
+    .maplibregl-ctrl-scale {
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(255, 255, 255, 0.85);
+      border-color: #333;
+      color: #222;
+      padding: 1px 6px;
+    }
 
     /* Tooltips: elements with data-tip get an ⓘ marker; demo.js shows the
        text in #tipbox on hover or keyboard focus. */
@@ -96,46 +123,79 @@
   <div id="panel">
     <h2>Predictor controls</h2>
 
-    <div class="row"><label for="seed">seed</label><input id="seed" type="number" value="42" step="1" /></div>
-    <div class="row"><label for="v_min">v_min</label><input id="v_min" type="number" value="3" step="0.5" /></div>
-    <div class="row"><label for="v_max">v_max</label><input id="v_max" type="number" value="12" step="0.5" /></div>
-    <div class="row"><label for="a_lat">a_lat</label><input id="a_lat" type="number" value="9.0" step="0.5" /></div>
-    <div class="row"><label for="a_long">a_long</label><input id="a_long" type="number" value="3.0" step="0.5" /></div>
-    <div class="row"><label for="omega_cap">omega_cap</label><input id="omega_cap" type="number" value="1.0" step="0.05" /></div>
-    <div class="row"><label for="horizon_s">horizon_s</label><input id="horizon_s" type="number" value="10" step="0.5" /></div>
-    <div class="row"><label for="duration_s">duration_s</label><input id="duration_s" type="number" value="30" step="5" min="1" /></div>
-    <div class="row"><label for="sim_speed">sim_speed</label><input id="sim_speed" type="number" value="12" step="0.5" /></div>
-    <div class="row"><label for="n_samples">n_samples</label><input id="n_samples" type="number" value="5000" step="500" /></div>
-    <div class="row"><label for="p_turn">p_turn</label><input id="p_turn" type="number" value="0.3" step="0.05" min="0" max="1" /></div>
-    <div class="row"><label for="speed_noise_mps">speed_noise_mps</label><input id="speed_noise_mps" type="number" value="0.5" step="0.1" /></div>
-    <div class="row"><label for="azimuth_bins">azimuth_bins</label><input id="azimuth_bins" type="number" value="72" step="1" /></div>
-    <div class="row"><label for="ooi_x">OOI X (m)</label><input id="ooi_x" type="number" value="350" step="10" /></div>
-    <div class="row"><label for="ooi_y">OOI Y (m)</label><input id="ooi_y" type="number" value="0" step="10" /></div>
-    <div class="row"><label for="intent_hypothesis_prob">P(goal) prior</label><input id="intent_hypothesis_prob" type="number" value="0.5" step="0.1" min="0" max="1" /></div>
+    <details open>
+      <summary>Platform limits</summary>
+      <div class="row"><label for="v_min">v_min</label><input id="v_min" type="number" value="3" step="0.5" /></div>
+      <div class="row"><label for="v_max">v_max</label><input id="v_max" type="number" value="12" step="0.5" /></div>
+      <div class="row"><label for="a_lat">a_lat</label><input id="a_lat" type="number" value="9.0" step="0.5" /></div>
+      <div class="row"><label for="a_long">a_long</label><input id="a_long" type="number" value="3.0" step="0.5" /></div>
+      <div class="row"><label for="omega_cap">omega_cap</label><input id="omega_cap" type="number" value="1.0" step="0.05" /></div>
+    </details>
 
-    <div class="checks">
-      <label><input id="show_track" type="checkbox" checked /> show track</label>
-      <label><input id="show_cloud" type="checkbox" checked /> show point cloud</label>
-      <label><input id="show_paths" type="checkbox" checked /> show path ribbon <span style="color:#c00">(red = goal)</span></label>
-    </div>
+    <details>
+      <summary>Predictor</summary>
+      <div class="row"><label for="horizon_s">horizon_s</label><input id="horizon_s" type="number" value="10" step="0.5" /></div>
+      <div class="row"><label for="duration_s">duration_s</label><input id="duration_s" type="number" value="30" step="5" min="1" /></div>
+      <div class="row"><label for="n_samples">n_samples</label><input id="n_samples" type="number" value="5000" step="500" /></div>
+      <div class="row"><label for="p_turn">p_turn</label><input id="p_turn" type="number" value="0.3" step="0.05" min="0" max="1" /></div>
+      <div class="row"><label for="speed_noise_mps">speed_noise_mps</label><input id="speed_noise_mps" type="number" value="0.5" step="0.1" /></div>
+      <div class="row"><label for="azimuth_bins">azimuth_bins</label><input id="azimuth_bins" type="number" value="72" step="1" /></div>
+      <div class="row"><label for="intent_hypothesis_prob">P(goal) prior</label><input id="intent_hypothesis_prob" type="number" value="0.5" step="0.1" min="0" max="1" /></div>
+      <div class="row"><label for="seed">seed</label><input id="seed" type="number" value="42" step="1" /></div>
+    </details>
 
-    <div class="row">
-      <label for="traj-type">trajectory</label>
-      <select id="traj-type">
-        <option value="straight">straight</option>
-        <option value="orbit">orbit (drifting circle)</option>
-        <option value="spiral">spiral (constant speed)</option>
-        <option value="sine">sine (constant speed)</option>
-        <option value="zigzag">zigzag</option>
-      </select>
-    </div>
+    <details open>
+      <summary>OOIs</summary>
+      <div id="ooi-list"></div>
+      <div class="btns">
+        <button id="btn_add_ooi">+ Add on map</button>
+        <button id="btn_clear_ooi">Clear all</button>
+      </div>
+    </details>
 
-    <div id="traj-params"></div>
+    <details>
+      <summary>Display</summary>
+      <div class="checks">
+        <label><input id="show_track" type="checkbox" checked /> show track</label>
+        <label><input id="show_cloud" type="checkbox" checked /> show point cloud</label>
+        <label><input id="show_paths" type="checkbox" checked /> show path ribbon <span style="color:#c00">(red = goal)</span></label>
+      </div>
+    </details>
 
-    <div class="btns">
-      <button id="btn_sim">Simulate track</button>
-      <button id="btn_predict">Predict</button>
-    </div>
+    <details>
+      <summary>Simulated track</summary>
+      <div class="row"><label for="sim_speed">sim_speed</label><input id="sim_speed" type="number" value="12" step="0.5" /></div>
+      <div class="row">
+        <label for="traj-type">trajectory</label>
+        <select id="traj-type">
+          <option value="straight">straight</option>
+          <option value="orbit">orbit (drifting circle)</option>
+          <option value="spiral">spiral (constant speed)</option>
+          <option value="sine">sine (constant speed)</option>
+          <option value="zigzag">zigzag</option>
+        </select>
+      </div>
+      <div id="traj-params"></div>
+      <div class="btns">
+        <button id="btn_sim">Simulate track</button>
+        <button id="btn_predict">Predict</button>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Live flight (fixed-wing)</summary>
+      <div class="row"><label for="fly_x">start x (m)</label><input id="fly_x" type="number" value="0" step="10" /></div>
+      <div class="row"><label for="fly_y">start y (m)</label><input id="fly_y" type="number" value="0" step="10" /></div>
+      <div class="row"><label for="fly_heading">start heading (°)</label><input id="fly_heading" type="number" value="0" step="15" /></div>
+      <div class="row"><label for="fly_noise">sensor noise (m)</label><input id="fly_noise" type="number" value="1" step="0.5" min="0" /></div>
+      <div class="checks"><label><input id="fly_follow" type="checkbox" checked /> follow the drone</label></div>
+      <div class="btns">
+        <button id="btn_fly">Start flight</button>
+        <button id="btn_download" disabled>Download flight</button>
+      </div>
+      <div class="hint"><kbd>←</kbd> <kbd>→</kbd> bank &nbsp; <kbd>↑</kbd> <kbd>↓</kbd> speed &nbsp; <kbd>P</kbd> pause</div>
+      <div class="hint" id="fly_readout"></div>
+    </details>
 
     <div id="status">Ready.</div>
   </div>
@@ -150,6 +210,10 @@
     <div><span>v_est (m/s)</span><span id="svest">—</span></div>
     <div><span>elapsed ms</span><span id="selapsed">—</span></div>
     <div><span>n_bins_nonzero</span><span id="snz">—</span></div>
+    <div><span>live hit 50%</span><span id="slive50">—</span></div>
+    <div><span>live hit 90%</span><span id="slive90">—</span></div>
+    <div><span>live log score</span><span id="slogs">—</span></div>
+    <div><span>live samples</span><span id="sneff">—</span></div>
   </div>
 
   <script type="module" src="demo.js"></script>
